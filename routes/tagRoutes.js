@@ -2,7 +2,7 @@
 import express from 'express';
 import { protect } from '../middleware/authMiddleware.js'; // Protegeremos las rutas de tags
 // Importaremos los controladores de tags (que crearemos a continuación)
-import { createTag, listTags } from '../controllers/tagController.js';
+import { createTag, listTags, updateTag, deleteTag } from '../controllers/tagController.js';
 
 const router = express.Router();
 
@@ -16,6 +16,14 @@ router.get('/', protect, listTags);
 // Podríamos añadir aquí el middleware 'admin' o 'docenteOrAdmin' si quisiéramos restringirlo.
 router.post('/', protect, createTag);
 
-// Aquí podrían ir rutas para actualizar o eliminar tags en el futuro
+// Actualizar una etiqueta existente
+// PUT /api/tags/:id
+// Permitiremos actualizar a admin o al creador de la tag
+router.put('/:id', protect, updateTag);
+
+// Eliminar una etiqueta existente
+// DELETE /api/tags/:id
+// Permitiremos eliminar a admin o al creador de la tag
+router.delete('/:id', protect, deleteTag);
 
 export default router;

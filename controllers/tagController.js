@@ -1,5 +1,7 @@
 // backend/controllers/tagController.js
-import Tag from '../models/Tag.js'; // Importa el modelo Tag
+import Tag from '../models/Tag.js'; 
+import File from '../models/File.js'; 
+import mongoose from 'mongoose'; 
 
 // --- Controlador para Crear una Nueva Etiqueta ---
 const createTag = async (req, res) => {
@@ -58,6 +60,106 @@ const listTags = async (req, res) => {
     }
 };
 
+// --- NUEVO Controlador para Actualizar Etiqueta ---
+const updateTag = async (req, res) => {
+    const { id: tagId } = req.params;
+    const { name } = req.body; // Solo permitimos cambiar el nombre
 
-// Exportar los controladores de tags
-export { createTag, listTags };
+    if (!mongoose.Types.ObjectId.isValid(tagId)) {
+        return res.status(400).json({ message: 'ID de etiqueta inválido.' });
+    }
+    if (!name || name.trim() === '') {
+        return res.status(400).json({ message: 'El nuevo nombre de la etiqueta es obligatorio.' });
+    }
+
+    const newTagName = name.trim().toLowerCase();
+
+    try {
+        // 1. Encontrar la etiqueta
+        const tag = await Tag.findById(tagId);
+        if (!tag) {
+            return res.status(404).json({ message: 'Etiqueta no encontrada.' });
+        }
+
+        // 2. Verificar Permisos
+        const isAdmin = req.user.role === 'admin';
+        // Compara ObjectIds como strings para seguridad
+        const isOwner = tag.createdBy.toString() === req.user._id.toString();
+
+        if (!isAdmin && !isOwner) {
+            return res.status(403).json({ message: 'No autorizado para modificar esta etiqueta.' });
+        }
+
+        // 3. Verificar Conflicto de Nombre Duplicado (con otra etiqueta)
+        const duplicate = await Tag.findOne({
+            name: newTagName,
+            _id: { $ne: tagId } // Excluir la etiqueta actual de la búsqueda
+        });
+        if (duplicate) {
+             return res.status(400).json({ message: `La etiqueta "${newTagName}" ya existe.` });
+        }
+
+        // 4. Actualizar y Guardar
+        tag.name = newTagName;
+        const updatedTag = await tag.save();
+
+        // 5. Devolver la etiqueta actualizada
+        const populatedTag = await Tag.findById(updatedTag._id)
+                                        .populate('createdBy', 'username'); // Poblar creador
+        res.status(200).json(populatedTag);
+
+    } catch (error) {
+        console.error('Error al actualizar etiqueta:', error);
+        if (error.code === 11000) { // Error de índice único
+            return res.status(400).json({ message: `Error: La etiqueta "${newTagName}" ya existe.` });
+         }
+        res.status(500).json({ message: 'Error interno del servidor al actualizar.' });
+    }
+};
+
+
+// --- NUEVO Controlador para Eliminar Etiqueta ---
+const deleteTag = async (req, res) => {
+    const { id: tagId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(tagId)) {
+        return res.status(400).json({ message: 'ID de etiqueta inválido.' });
+    }
+
+    try {
+        // 1. Encontrar la etiqueta
+        const tag = await Tag.findById(tagId);
+        if (!tag) {
+            return res.status(204).send(); // Si no existe, éxito silencioso
+        }
+
+        // 2. Verificar Permisos
+        const isAdmin = req.user.role === 'admin';
+        const isOwner = tag.createdBy.toString() === req.user._id.toString();
+
+        if (!isAdmin && !isOwner) {
+             return res.status(403).json({ message: 'No autorizado para eliminar esta etiqueta.' });
+        }
+
+        // 3. Eliminar la referencia a esta etiqueta de TODOS los archivos que la contengan
+        // Usamos $pull para quitar el tagId del array 'tags' en los documentos File
+        await File.updateMany(
+            { tags: tagId }, // Filtro: encuentra archivos que contengan el tagId
+            { $pull: { tags: tagId } } // Operación: quita ese tagId del array 'tags'
+        );
+
+        // 4. Eliminar la etiqueta en sí
+        await Tag.findByIdAndDelete(tagId);
+
+        // 5. Enviar respuesta de éxito sin contenido
+        res.status(204).send();
+
+    } catch (error) {
+        console.error('Error al eliminar etiqueta:', error);
+        res.status(500).json({ message: 'Error interno del servidor al eliminar.' });
+    }
+};
+
+
+// Exportar TODOS los controladores de tags
+export { createTag, listTags, updateTag, deleteTag };
