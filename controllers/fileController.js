@@ -134,28 +134,75 @@ const uploadFile = async (req, res) => {
 
 //  Controlador para Listar Archivos por Carpeta ---
 const getFilesByFolder = async (req, res) => {
-    // 1. Obtener folderId de los query parameters
-    const { folderId } = req.query; // Accedemos a req.query para parámetros GET (?folderId=...)
+    const { folderId } = req.query; // ID de la carpeta requerida
+    const user = req.user; // Usuario autenticado (con _id, role, groups)
 
-    // 2. Validación básica
+    // Validación de folderId (requerido)
     if (!folderId) {
         return res.status(400).json({ message: 'Se requiere el parámetro folderId.' });
     }
+    if (!mongoose.Types.ObjectId.isValid(folderId)) {
+         return res.status(400).json({ message: 'El folderId proporcionado no es válido.' });
+    }
+    // Podríamos validar aquí si la carpeta existe y si el usuario tiene permiso para VER la carpeta en sí,
+    // pero por ahora nos centramos en filtrar los archivos DENTRO de ella.
 
-    // Aquí podrías añadir validación extra:
-    // - Verificar si folderId es un ObjectId válido de MongoDB.
-    // - Verificar si la carpeta existe.
-    // - Verificar si el usuario (req.user) tiene permiso para ver esta carpeta (más avanzado).
+    if (!user) {
+        return res.status(401).json({ message: 'Usuario no autenticado.' });
+    }
 
     try {
-        // 3. Buscar archivos en la BD que pertenezcan a esa carpeta
-        const files = await File.find({ folder: folderId }) // Busca todos los 'File' cuyo campo 'folder' sea igual a folderId
-                                .sort({ createdAt: -1 }) // Opcional: Ordena por fecha de creación descendente (más nuevos primero)
-                                .populate('uploadedBy', 'username email') // Opcional: Trae datos del usuario que subió (username y email) en lugar de solo el ID
-                                .populate('tags', 'name'); // Opcional: Trae los nombres de las tags en lugar de solo los IDs
+        let filter = {};
+
+        // 1. Filtro base por carpeta contenedora
+        const baseFilter = { folder: folderId };
+
+        // 2. Construir filtro de permisos según el rol para los archivos
+        if (user.role === 'admin') {
+            // Admin ve todos los archivos de esa carpeta
+            filter = baseFilter;
+        } else {
+            const userGroupIds = user.groups.map(group => group._id);
+            let permissionFilter = {};
+
+            if (user.role === 'residente/alumno') {
+                // Becado ve archivos: (Públicos O Asignados a sus Grupos) en esa carpeta
+                permissionFilter = {
+                    $or: [
+                        { assignedGroup: null },
+                        { assignedGroup: { $in: userGroupIds } }
+                    ]
+                };
+            } else if (user.role === 'docente') {
+                 // Docente ve archivos: (Creados por él O Asignados a sus Grupos) en esa carpeta
+                 permissionFilter = {
+                    $or: [
+                        { uploadedBy: user._id },
+                        { assignedGroup: { $in: userGroupIds } }
+                    ]
+                    
+                };
+                
+            } else {
+                return res.status(403).json({ message: 'Rol de usuario no tiene permisos definidos para listar.' });
+            }
+
+            // Combinar filtro base y filtro de permisos
+            filter = { $and: [baseFilter, permissionFilter] };
+            console.log('Docente File Final Filter:', JSON.stringify(filter));
+        }
+
+        
+        
+        // 3. Buscar los archivos aplicando el filtro final
+        const files = await File.find(filter)
+                                .sort({ createdAt: -1 })
+                                .populate('uploadedBy', 'username email')
+                                .populate('tags', 'name')
+                                .populate('assignedGroup', 'name'); // Poblar grupo asignado
 
         // 4. Enviar respuesta
-        res.status(200).json(files); // Devuelve el array de archivos encontrados (puede ser vacío [])
+        res.status(200).json(files);
 
     } catch (error) {
         console.error('Error al obtener archivos por carpeta:', error);

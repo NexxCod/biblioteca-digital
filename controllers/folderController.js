@@ -77,30 +77,62 @@ const createFolder = async (req, res) => {
 
 // --- NUEVO Controlador para Listar Carpetas ---
 const listFolders = async (req, res) => {
-    // 1. Obtener el ID de la carpeta padre (opcional) de los query parameters
-    const { parentFolder } = req.query; // ej: /api/folders?parentFolder=60b...
+    const { parentFolder } = req.query; // ID de la carpeta padre opcional
+    const user = req.user; // Usuario autenticado (con _id, role, groups)
+
+    if (!user) {
+        // Esto no debería pasar si 'protect' funciona, pero es una doble verificación
+        return res.status(401).json({ message: 'Usuario no autenticado.' });
+    }
 
     try {
-        // 2. Construir el filtro de búsqueda
-        const filter = {};
-        if (parentFolder) {
-            // Si se proporciona parentFolder, buscar subcarpetas de esa carpeta
-            filter.parentFolder = parentFolder;
+        let filter = {};
+
+        // 1. Filtro base por nivel (raíz o subcarpeta)
+        const baseFilter = { parentFolder: parentFolder || null };
+
+        // 2. Construir filtro de permisos según el rol
+        if (user.role === 'admin') {
+            // Admin ve todo en el nivel solicitado
+            filter = baseFilter;
         } else {
-            // Si NO se proporciona parentFolder, buscar carpetas raíz (aquellas sin padre)
-            filter.parentFolder = null;
+            // Para Becado y Docente, necesitamos los IDs de sus grupos
+            const userGroupIds = user.groups.map(group => group._id); // Extraer IDs de los grupos populados
+
+            let permissionFilter = {};
+            if (user.role === 'residente/alumno') {
+                // Becado ve: (Públicas O Asignadas a sus Grupos)
+                permissionFilter = {
+                    $or: [
+                        { assignedGroup: null }, // Públicas
+                        { assignedGroup: { $in: userGroupIds } } // Asignadas a sus grupos
+                    ]
+                };
+            } else if (user.role === 'docente') {
+                // Docente ve: (Creadas por él O Asignadas a sus Grupos)
+                permissionFilter = {
+                    $or: [
+                        { createdBy: user._id }, // Creadas por él
+                        { assignedGroup: { $in: userGroupIds } } // Asignadas a sus grupos
+                    ]
+                };
+            } else {
+                // Rol desconocido o sin permisos definidos (no debería pasar)
+                return res.status(403).json({ message: 'Rol de usuario no tiene permisos definidos para listar.' });
+            }
+
+            // Combinar filtro base y filtro de permisos
+            filter = { $and: [baseFilter, permissionFilter] };
         }
 
-        // Opcional: Filtrar por usuario si las carpetas fueran privadas
-        // filter.createdBy = req.user._id;
-
-        // 3. Buscar las carpetas en la BD que cumplan con el filtro
+        // 3. Buscar las carpetas aplicando el filtro final
         const folders = await Folder.find(filter)
-                                    .sort({ name: 1 }) // Opcional: Ordenar alfabéticamente por nombre
-                                    .populate('createdBy', 'username'); // Opcional: Traer username del creador
+                                    .sort({ name: 1 })
+                                    .populate('createdBy', 'username')
+                                    .populate('assignedGroup', 'name'); // Poblar también el grupo asignado
 
         // 4. Enviar respuesta
-        res.status(200).json(folders); // Devuelve el array de carpetas encontradas
+        res.status(200).json(folders);
 
     } catch (error) {
         console.error('Error al listar carpetas:', error);
