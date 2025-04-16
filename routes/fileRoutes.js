@@ -1,8 +1,14 @@
 // backend/routes/fileRoutes.js
-import express from 'express';
-import multer from 'multer';
-import { protect } from '../middleware/authMiddleware.js'; // Middleware de autenticación
-import { uploadFile, getFilesByFolder, addVideoLink } from '../controllers/fileController.js'; // Controlador (lo crearemos a continuación)
+import express from "express";
+import multer from "multer";
+import { protect } from "../middleware/authMiddleware.js"; // Middleware de autenticación
+import {
+  uploadFile,
+  getFilesByFolder,
+  addVideoLink,
+  updateFile,
+  deleteFile,
+} from "../controllers/fileController.js"; // Controlador (lo crearemos a continuación)
 
 // --- Configuración de Multer ---
 // Usamos almacenamiento en memoria (el archivo estará en req.file.buffer)
@@ -10,23 +16,29 @@ const storage = multer.memoryStorage();
 
 // Filtro opcional para tipos de archivo (ejemplo: permitir PDF, Word, JPG, PNG)
 const fileFilter = (req, file, cb) => {
-    const allowedTypes = /pdf|doc|docx|jpg|jpeg|png/;
-    const mimetype = allowedTypes.test(file.mimetype);
-    const extname = allowedTypes.test(file.originalname.split('.').pop().toLowerCase());
+  const allowedTypes = /pdf|doc|docx|jpg|jpeg|png/;
+  const mimetype = allowedTypes.test(file.mimetype);
+  const extname = allowedTypes.test(
+    file.originalname.split(".").pop().toLowerCase()
+  );
 
-    if (mimetype && extname) {
-        return cb(null, true);
-    }
-    cb(new Error('Error: Tipo de archivo no soportado. Solo se permiten PDF, DOC, DOCX, JPG, JPEG, PNG.'), false);
+  if (mimetype && extname) {
+    return cb(null, true);
+  }
+  cb(
+    new Error(
+      "Error: Tipo de archivo no soportado. Solo se permiten PDF, DOC, DOCX, JPG, JPEG, PNG."
+    ),
+    false
+  );
 };
 
 // Inicializamos multer con el almacenamiento y el filtro
 const upload = multer({
-    storage: storage,
-    limits: { fileSize: 500 * 1024 * 1024 }, // Límite de tamaño (ej: 500MB)
-    fileFilter: fileFilter
+  storage: storage,
+  limits: { fileSize: 500 * 1024 * 1024 }, // Límite de tamaño (ej: 500MB)
+  fileFilter: fileFilter,
 });
-
 
 // --- Definición de Rutas ---
 const router = express.Router();
@@ -39,15 +51,22 @@ const router = express.Router();
 //    - Procesa el archivo y lo añade a req.file.
 //    - Procesa otros campos de texto y los añade a req.body.
 // 3. 'uploadFile': Nuestro controlador que maneja la lógica final.
-router.post('/upload', protect, upload.single('file'), uploadFile);
-
+router.post("/upload", protect, upload.single("file"), uploadFile);
 
 // Listar archivos por carpeta
 // GET /api/files?folderId=...
-router.get('/', protect, getFilesByFolder);
+router.get("/", protect, getFilesByFolder);
 
-// NUEVA RUTA: Añadir un enlace de video
+// Añadir un enlace de video
 // POST /api/files/add-link
-router.post('/add-link', protect, addVideoLink); // No usa multer
+router.post("/add-link", protect, addVideoLink);
+
+// Actualizar un archivo/enlace existente
+// PUT /api/files/:id
+router.put('/:id', protect, updateFile);
+
+// Eliminar un archivo/enlace existente
+// DELETE /api/files/:id
+router.delete('/:id', protect, deleteFile);
 
 export default router;

@@ -302,6 +302,162 @@ const addVideoLink = async (req, res) => {
     }
 };
 
+// --- NUEVO Controlador para Actualizar Archivo/Enlace ---
+const updateFile = async (req, res) => {
+    const { id: fileId } = req.params; // Obtener ID del archivo de la URL
+    // Campos potencialmente actualizables del body (JSON)
+    const { filename, description, tags, folderId, assignedGroupId } = req.body;
 
-// Exportar los tres controladores
-export { uploadFile, getFilesByFolder, addVideoLink };
+    // Validar el ID del archivo
+    if (!mongoose.Types.ObjectId.isValid(fileId)) {
+        return res.status(400).json({ message: 'ID de archivo inválido.' });
+    }
+
+    try {
+        // 1. Encontrar el archivo/enlace existente
+        const file = await File.findById(fileId);
+        if (!file) {
+            return res.status(404).json({ message: 'Archivo o enlace no encontrado.' });
+        }
+
+        // 2. Verificar Permisos
+        const isAdmin = req.user.role === 'admin';
+        const isOwner = file.uploadedBy.toString() === req.user._id.toString();
+
+        if (!isAdmin && !isOwner) {
+            return res.status(403).json({ message: 'No autorizado para modificar este recurso.' });
+        }
+
+        // 3. Validar y Procesar Campos a Actualizar
+
+        // Validar folderId si se proporciona
+        if (folderId) {
+             if (!mongoose.Types.ObjectId.isValid(folderId)) return res.status(400).json({ message: 'El folderId proporcionado no es válido.' });
+             const folderExists = await Folder.findById(folderId);
+             if (!folderExists) return res.status(404).json({ message: 'La nueva carpeta especificada no existe.'});
+             file.folder = folderId; // Actualizar carpeta
+        }
+
+        // Validar assignedGroupId si se proporciona
+        if (assignedGroupId !== undefined) { // Permitir asignar a null (público)
+            if (assignedGroupId !== null && !mongoose.Types.ObjectId.isValid(assignedGroupId)) {
+                 return res.status(400).json({ message: 'El assignedGroupId proporcionado no es válido.' });
+            }
+            if (assignedGroupId) {
+                const groupExists = await Group.findById(assignedGroupId);
+                if (!groupExists) return res.status(404).json({ message: 'El grupo asignado no existe.'});
+            }
+            file.assignedGroup = assignedGroupId; // Actualizar grupo (puede ser null)
+        }
+
+
+        // Actualizar filename/título si se proporciona
+        if (filename) {
+            file.filename = filename;
+        }
+
+        // Actualizar descripción si se proporciona (permite string vacío)
+        if (description !== undefined) {
+            file.description = description;
+        }
+
+        // Procesar y actualizar tags si se proporcionan
+        if (tags !== undefined) {
+             let tagIds = [];
+             if (tags && typeof tags === 'string') {
+                 const tagNames = tags.split(',').map(tag => tag.trim().toLowerCase()).filter(Boolean);
+                 tagIds = await Promise.all(
+                     tagNames.map(async (name) => {
+                         const tag = await Tag.findOneAndUpdate(
+                             { name: name },
+                             { $setOnInsert: { name: name, createdBy: req.user._id } },
+                             { upsert: true, new: true, runValidators: true }
+                         );
+                         return tag._id;
+                     })
+                 );
+             }
+             file.tags = tagIds; // Actualiza el array de tags (puede ser vacío si tags="")
+        }
+
+        // 4. Guardar los cambios en la BD
+        const updatedFile = await file.save();
+
+        // 5. Devolver el archivo actualizado y poblado
+        const populatedFile = await File.findById(updatedFile._id)
+                                        .populate('uploadedBy', 'username email')
+                                        .populate('tags', 'name')
+                                        .populate('assignedGroup', 'name');
+        res.status(200).json(populatedFile);
+
+    } catch (error) {
+        console.error('Error al actualizar archivo/enlace:', error);
+        res.status(500).json({ message: 'Error interno del servidor al actualizar.' });
+    }
+};
+
+
+// --- NUEVO Controlador para Eliminar Archivo/Enlace ---
+const deleteFile = async (req, res) => {
+    const { id: fileId } = req.params; // Obtener ID del archivo de la URL
+
+    // Validar el ID del archivo
+    if (!mongoose.Types.ObjectId.isValid(fileId)) {
+        return res.status(400).json({ message: 'ID de archivo inválido.' });
+    }
+
+    try {
+        // 1. Encontrar el archivo/enlace existente
+        const file = await File.findById(fileId);
+        if (!file) {
+            // Si no se encuentra, igual devolvemos éxito (o 404 si prefieres ser estricto)
+            // ya que el resultado final (no existe) es el mismo.
+            // Devolver 204 evita que el frontend muestre un error si se hace doble clic en borrar.
+            return res.status(204).send();
+        }
+
+        // 2. Verificar Permisos
+        const isAdmin = req.user.role === 'admin';
+        const isOwner = file.uploadedBy.toString() === req.user._id.toString();
+
+        if (!isAdmin && !isOwner) {
+            return res.status(403).json({ message: 'No autorizado para eliminar este recurso.' });
+        }
+
+        // 3. Eliminar de Cloudinary SI NO es un video_link
+        if (file.fileType !== 'video_link' && file.cloudinaryId) {
+            try {
+                // Intentamos borrar de Cloudinary usando solo el public_id
+                // Añadimos { invalidate: true } para intentar invalidar caché de CDN más rápido
+                const destructionResult = await cloudinary.uploader.destroy(file.cloudinaryId, { invalidate: true });
+                console.log('Cloudinary destruction result:', destructionResult); // Log para debug
+                // Podríamos chequear destructionResult.result si es 'ok' o 'not found'
+                if (destructionResult.result !== 'ok' && destructionResult.result !== 'not found') {
+                     // Si Cloudinary da un error inesperado, podríamos decidir detenernos
+                     // throw new Error('Error al eliminar archivo de Cloudinary.');
+                     // O solo loggear y continuar para borrar de la BD
+                     console.warn(`Archivo ${file.cloudinaryId} no pudo ser eliminado de Cloudinary o no encontrado, resultado: ${destructionResult.result}`);
+                }
+            } catch (cloudinaryError) {
+                console.error('Error al eliminar de Cloudinary:', cloudinaryError);
+                // Decidir si fallar aquí o continuar y solo borrar de la BD
+                // Por ahora, continuamos para borrar la referencia de la BD
+                // return res.status(500).json({ message: 'Error al eliminar archivo de Cloudinary.' });
+            }
+        }
+
+        // 4. Eliminar de MongoDB
+        await File.findByIdAndDelete(fileId);
+
+        // 5. Enviar respuesta de éxito sin contenido
+        res.status(204).send(); // 204 No Content es apropiado para DELETE exitoso
+
+    } catch (error) {
+        console.error('Error al eliminar archivo/enlace:', error);
+        res.status(500).json({ message: 'Error interno del servidor al eliminar.' });
+    }
+};
+
+
+// Exportar TODOS los controladores del archivo
+export { uploadFile, getFilesByFolder, addVideoLink, updateFile, deleteFile }
