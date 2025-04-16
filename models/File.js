@@ -54,7 +54,9 @@ const fileSchema = new mongoose.Schema({
 
 fileSchema.index({ folder: 1, filename: 1 });
 fileSchema.index({ tags: 1 });
+fileSchema.index({ filename: 'text', description: 'text' });
 
 const File = mongoose.model('File', fileSchema);
+
 
 export default File; // Exportación por defecto para ESM

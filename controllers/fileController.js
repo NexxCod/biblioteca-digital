@@ -134,74 +134,111 @@ const uploadFile = async (req, res) => {
 
 //  Controlador para Listar Archivos por Carpeta ---
 const getFilesByFolder = async (req, res) => {
-    const { folderId } = req.query; // ID de la carpeta requerida
-    const user = req.user; // Usuario autenticado (con _id, role, groups)
+    // 1. Extraer TODOS los posibles query parameters
+    const { folderId, fileType, tags, startDate, endDate, search } = req.query;
+    const user = req.user;
 
-    // Validación de folderId (requerido)
-    if (!folderId) {
-        return res.status(400).json({ message: 'Se requiere el parámetro folderId.' });
+    // Validación base (folderId sigue siendo requerido por ahora)
+    if (!folderId || !mongoose.Types.ObjectId.isValid(folderId)) {
+        return res.status(400).json({ message: 'Se requiere un folderId válido.' });
     }
-    if (!mongoose.Types.ObjectId.isValid(folderId)) {
-         return res.status(400).json({ message: 'El folderId proporcionado no es válido.' });
-    }
-    // Podríamos validar aquí si la carpeta existe y si el usuario tiene permiso para VER la carpeta en sí,
-    // pero por ahora nos centramos en filtrar los archivos DENTRO de ella.
-
     if (!user) {
         return res.status(401).json({ message: 'Usuario no autenticado.' });
     }
 
     try {
-        let filter = {};
-
-        // 1. Filtro base por carpeta contenedora
-        const baseFilter = { folder: folderId };
-
-        // 2. Construir filtro de permisos según el rol para los archivos
-        if (user.role === 'admin') {
-            // Admin ve todos los archivos de esa carpeta
-            filter = baseFilter;
-        } else {
+        // 2. Construir Filtro de Permisos (igual que antes)
+        let permissionFilter = {};
+        const isAdmin = user.role === 'admin';
+        if (!isAdmin) {
             const userGroupIds = user.groups.map(group => group._id);
-            let permissionFilter = {};
-
             if (user.role === 'residente/alumno') {
-                // Becado ve archivos: (Públicos O Asignados a sus Grupos) en esa carpeta
-                permissionFilter = {
-                    $or: [
-                        { assignedGroup: null },
-                        { assignedGroup: { $in: userGroupIds } }
-                    ]
-                };
+                permissionFilter = { $or: [{ assignedGroup: null }, { assignedGroup: { $in: userGroupIds } }] };
             } else if (user.role === 'docente') {
-                 // Docente ve archivos: (Creados por él O Asignados a sus Grupos) en esa carpeta
-                 permissionFilter = {
-                    $or: [
-                        { uploadedBy: user._id },
-                        { assignedGroup: { $in: userGroupIds } }
-                    ]
-                    
-                };
-                
+                permissionFilter = { $or: [{ uploadedBy: user._id }, { assignedGroup: { $in: userGroupIds } }] };
             } else {
-                return res.status(403).json({ message: 'Rol de usuario no tiene permisos definidos para listar.' });
+                 return res.status(403).json({ message: 'Rol no autorizado.' });
             }
+        } // Si es admin, permissionFilter queda vacío {}
 
-            // Combinar filtro base y filtro de permisos
-            filter = { $and: [baseFilter, permissionFilter] };
-            console.log('Docente File Final Filter:', JSON.stringify(filter));
+        // 3. Construir Filtro de Criterios del Usuario
+        let criteriaFilter = { folder: folderId }; // Siempre filtramos por carpeta
+
+        // Añadir filtro por tipo de archivo
+        if (fileType) {
+            // Opcional: Validar contra el enum del modelo File
+            const validTypes = File.schema.path('fileType').enumValues;
+            if (validTypes.includes(fileType)) {
+                criteriaFilter.fileType = fileType;
+            } else {
+                 console.warn(`Tipo de archivo inválido solicitado: ${fileType}`);
+                 // Podrías devolver un error 400 o simplemente ignorar el filtro inválido
+            }
         }
 
-        
-        
-        // 3. Buscar los archivos aplicando el filtro final
-        const files = await File.find(filter)
+        // Añadir filtro por tags (espera IDs separados por coma)
+        if (tags) {
+            const tagIdArray = tags.split(',')
+                                  .map(id => id.trim())
+                                  .filter(id => mongoose.Types.ObjectId.isValid(id)); // Valida que sean ObjectIds
+
+            if (tagIdArray.length > 0) {
+                // $all: el archivo DEBE tener TODAS las tags especificadas
+                criteriaFilter.tags = { $all: tagIdArray };
+                // Si quisieras que coincida con CUALQUIERA de las tags, usarías:
+                // criteriaFilter.tags = { $in: tagIdArray };
+            }
+        }
+
+        // Añadir filtro por fecha de creación (createdAt)
+        let dateFilter = {};
+        if (startDate) {
+            const date = new Date(startDate);
+            if (!isNaN(date)) { // Verifica si la fecha es válida
+                 date.setUTCHours(0, 0, 0, 0); // Considerar desde el inicio del día UTC
+                 dateFilter.$gte = date;
+            }
+        }
+        if (endDate) {
+             const date = new Date(endDate);
+             if (!isNaN(date)) {
+                 date.setUTCHours(23, 59, 59, 999); // Considerar hasta el final del día UTC
+                 dateFilter.$lte = date;
+             }
+        }
+        if (Object.keys(dateFilter).length > 0) {
+            criteriaFilter.createdAt = dateFilter;
+        }
+
+        // Añadir filtro de búsqueda por texto (case-insensitive en filename y description)
+        if (search) {
+            const searchRegex = new RegExp(search.trim(), 'i'); // 'i' para case-insensitive
+            criteriaFilter.$or = [
+                { filename: searchRegex },
+                { description: searchRegex }
+            ];
+            // Nota: Para búsquedas más eficientes en campos grandes, considera usar índices de texto de MongoDB ($text: { $search: ... })
+            // lo cual requeriría añadir fileSchema.index({ filename: 'text', description: 'text' }) en File.js
+        }
+
+        // 4. Combinar Filtros: Criterios Y Permisos (si no es admin)
+        let finalFilter = {};
+        if (isAdmin) {
+            finalFilter = criteriaFilter; // Admin solo usa los criterios dentro de la carpeta
+        } else {
+            // Los demás usan los criterios Y ADEMÁS sus permisos
+            finalFilter = { $and: [criteriaFilter, permissionFilter] };
+        }
+        // console.log('Final Filter:', JSON.stringify(finalFilter)); // Descomentar para debug
+
+        // 5. Ejecutar la Consulta
+        const files = await File.find(finalFilter)
                                 .sort({ createdAt: -1 })
                                 .populate('uploadedBy', 'username email')
                                 .populate('tags', 'name')
-                                .populate('assignedGroup', 'name'); // Poblar grupo asignado
+                                .populate('assignedGroup', 'name');
 
-        // 4. Enviar respuesta
+        // 6. Enviar Respuesta
         res.status(200).json(files);
 
     } catch (error) {
