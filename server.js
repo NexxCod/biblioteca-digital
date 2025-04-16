@@ -7,6 +7,7 @@ import userRoutes from './routes/userRoutes.js';
 import fileRoutes from './routes/fileRoutes.js';
 import folderRoutes from './routes/folderRoutes.js';
 import tagRoutes from './routes/tagRoutes.js';
+import groupRoutes from './routes/groupRoutes.js';
 
 // --- Conexión a la Base de Datos ---
 connectDB(); 
@@ -30,7 +31,7 @@ app.get('/', (req, res) => {
   app.use('/api/files', fileRoutes);
   app.use('/api/folders', folderRoutes);
   app.use('/api/tags', tagRoutes);
-
+  app.use('/api/groups', groupRoutes);
 
 
 

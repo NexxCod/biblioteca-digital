@@ -1,18 +1,39 @@
 // backend/controllers/folderController.js
 import Folder from '../models/Folder.js'; // Importa el modelo Folder
+import Group from '../models/Group.js'; // <--- Importar Group para validación
+import mongoose from 'mongoose';
 
 // --- Controlador para Crear Carpeta ---
 const createFolder = async (req, res) => {
     // 1. Obtener datos del cuerpo de la petición
     // Esperamos el 'name' de la carpeta y opcionalmente un 'parentFolder' (ID de la carpeta padre)
-    const { name, parentFolder } = req.body;
+    const { name, parentFolder, assignedGroupId } = req.body;
 
     // 2. Validación básica
     if (!name || name.trim() === '') {
         return res.status(400).json({ message: 'El nombre de la carpeta es obligatorio.' });
     }
+    const folderName = name.trim();
 
     // Si se proporciona parentFolder, podrías validar aquí si ese ID es válido o existe (opcional)
+
+    // 3. Validación de assignedGroupId (NUEVO)
+    let validatedGroupId = null; // Por defecto es null (público/rol)
+    if (assignedGroupId) {
+        if (!mongoose.Types.ObjectId.isValid(assignedGroupId)) {
+            return res.status(400).json({ message: 'El assignedGroupId proporcionado no es válido.' });
+        }
+        try {
+            const groupExists = await Group.findById(assignedGroupId);
+            if (!groupExists) {
+                return res.status(404).json({ message: 'El grupo asignado no existe.' });
+            }
+            validatedGroupId = assignedGroupId; // ID es válido y el grupo existe
+        } catch (error) {
+             console.error('Error buscando grupo asignado:', error);
+             return res.status(500).json({ message: 'Error al verificar el grupo asignado.' });
+        }
+    }
 
     try {
         // 3. Verificar si ya existe una carpeta con el mismo nombre en el mismo nivel (padre)
@@ -32,9 +53,10 @@ const createFolder = async (req, res) => {
 
         // 4. Crear la nueva carpeta en la BD
         const folder = await Folder.create({
-            name: name.trim(),
+            name: folderName,
             parentFolder: parentFolder || null, // Guarda null si no se especifica padre
-            createdBy: req.user._id // Asigna el ID del usuario logueado (viene de 'protect')
+            createdBy: req.user._id ,// Asigna el ID del usuario logueado (viene de 'protect')
+            assignedGroup: validatedGroupId // Asigna el grupo validado (o null si no se asignó)
         });
 
         // 5. Enviar respuesta exitosa

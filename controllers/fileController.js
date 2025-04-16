@@ -3,6 +3,8 @@ import cloudinary from '../config/cloudinaryConfig.js'; // Importa la instancia 
 import File from '../models/File.js';
 import Folder from '../models/Folder.js';
 import Tag from '../models/Tag.js';
+import Group from '../models/Group.js';
+import mongoose from 'mongoose';
 import streamifier from 'streamifier';      // Ayuda a crear un stream desde el buffer
 
 // --- Controlador para Subir Archivo ---
@@ -14,13 +16,31 @@ const uploadFile = async (req, res) => {
 
     // 2. Obtener datos adicionales del cuerpo (si los enviaste)
     // Estos deben venir como campos en el mismo form-data que el archivo
-    const { description, folderId, tags } = req.body; // Asumimos que se envían folderId y tags (como string separado por comas, por ejemplo)
+    const { description, folderId, tags, assignedGroupId } = req.body; // Asumimos que se envían folderId y tags (como string separado por comas, por ejemplo)
 
     // Validación simple (necesitas una carpeta donde guardar!)
     if (!folderId) {
         return res.status(400).json({ message: 'Se requiere especificar la carpeta (folderId).' });
     }
     // Aquí deberías validar que la carpeta (folderId) existe y pertenece al usuario si es necesario.
+
+    // Validación de assignedGroupId (NUEVO) - Igual que en createFolder
+    let validatedGroupId = null;
+    if (assignedGroupId) {
+        if (!mongoose.Types.ObjectId.isValid(assignedGroupId)) {
+            return res.status(400).json({ message: 'El assignedGroupId proporcionado no es válido.' });
+        }
+        try {
+            const groupExists = await Group.findById(assignedGroupId);
+            if (!groupExists) {
+                return res.status(404).json({ message: 'El grupo asignado no existe.' });
+            }
+            validatedGroupId = assignedGroupId;
+        } catch (error) {
+             console.error('Error buscando grupo asignado:', error);
+             return res.status(500).json({ message: 'Error al verificar el grupo asignado.' });
+        }
+    }
 
     try {
         // 3. Función para subir el stream a Cloudinary
@@ -93,14 +113,16 @@ const uploadFile = async (req, res) => {
             size: cloudinaryResult.bytes,           // Tamaño en bytes
             folder: folderId,                       // ID de la carpeta (¡Validar antes!)
             tags: tagIds,                           // IDs de las etiquetas (requiere lógica adicional)
-            uploadedBy: req.user._id                // ID del usuario logueado (viene de 'protect')
+            uploadedBy: req.user._id,                // ID del usuario logueado (viene de 'protect')
+            assignedGroup: validatedGroupId
         });
 
         // 6. Enviar respuesta exitosa
         // Opcional: Poblar la respuesta para devolver los nombres de las tags inmediatamente
         const populatedFile = await File.findById(newFile._id)
                                         .populate('uploadedBy', 'username email')
-                                        .populate('tags', 'name');
+                                        .populate('tags', 'name')
+                                        .populate('assignedGroup', 'name');
         res.status(201).json(populatedFile || newFile);
 
     } catch (error) {
@@ -144,7 +166,7 @@ const getFilesByFolder = async (req, res) => {
 //  Controlador para Añadir Enlace de Video ---
 const addVideoLink = async (req, res) => {
     // 1. Obtener datos del cuerpo (esperamos JSON aquí, no form-data)
-    const { youtubeUrl, title, description, folderId, tags } = req.body;
+    const { youtubeUrl, title, description, folderId, tags, assignedGroupId } = req.body;
 
     // 2. Validación básica
     if (!youtubeUrl || !title || !folderId) {
@@ -155,6 +177,25 @@ const addVideoLink = async (req, res) => {
     if (!youtubeUrl.includes('youtube.com/') && !youtubeUrl.includes('youtu.be/')) {
          return res.status(400).json({ message: 'La URL proporcionada no parece ser válida de YouTube.' });
     }
+
+    // Validación de assignedGroupId (NUEVO) - Igual que en createFolder
+    let validatedGroupId = null;
+    if (assignedGroupId) {
+        if (!mongoose.Types.ObjectId.isValid(assignedGroupId)) {
+            return res.status(400).json({ message: 'El assignedGroupId proporcionado no es válido.' });
+        }
+        try {
+            const groupExists = await Group.findById(assignedGroupId);
+            if (!groupExists) {
+                return res.status(404).json({ message: 'El grupo asignado no existe.' });
+            }
+            validatedGroupId = assignedGroupId;
+        } catch (error) {
+             console.error('Error buscando grupo asignado:', error);
+             return res.status(500).json({ message: 'Error al verificar el grupo asignado.' });
+        }
+    }
+
 
     // Opcional: Validar que la carpeta (folderId) existe
     try {
@@ -197,13 +238,15 @@ const addVideoLink = async (req, res) => {
             size: 0,                // No aplica
             folder: folderId,
             tags: tagIds, // Usamos el array (vacío por ahora)
-            uploadedBy: req.user._id // ID del usuario logueado
+            uploadedBy: req.user._id, // ID del usuario logueado
+            assignedGroup: validatedGroupId // Guarda el ID validado o null
         });
 
         // 5. Enviar respuesta exitosa
         const populatedFile = await File.findById(newVideoFile._id)
                                         .populate('uploadedBy', 'username email')
-                                        .populate('tags', 'name');
+                                        .populate('tags', 'name')
+                                        .populate('assignedGroup', 'name');
         res.status(201).json(populatedFile || newVideoFile);
 
     } catch (error) {

@@ -28,6 +28,11 @@ const userSchema = new mongoose.Schema({
         enum: ['admin', 'docente', 'residente/alumno'],
         default: 'residente/alumno'
     },
+    groups: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Group' // Referencia al nuevo modelo 'Group'
+    }]
+
 }, {
     timestamps: true // Añade createdAt y updatedAt
 });

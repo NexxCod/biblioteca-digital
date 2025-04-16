@@ -42,6 +42,12 @@ const fileSchema = new mongoose.Schema({
         ref: 'User',
         required: true
     },
+    assignedGroup: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Group',
+        default: null // null significa que es público (o visible según rol)
+    }
+
 }, {
     timestamps: true
 });

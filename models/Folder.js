@@ -17,6 +17,11 @@ const folderSchema = new mongoose.Schema({
         ref: 'User', // Referencia al modelo 'User'
         required: true
     },
+    assignedGroup: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Group',
+        default: null // null significa que es pública (o visible según rol)
+    }
 }, {
     timestamps: true
 });
