@@ -62,11 +62,25 @@ const uploadFile = async (req, res) => {
         // Procesar tags si vienen como string separado por comas
         let tagIds = [];
         if (tags && typeof tags === 'string') {
-            const tagNames = tags.split(',').map(tag => tag.trim().toLowerCase()).filter(Boolean);
-            // Aquí deberías buscar los IDs de las tags existentes o crearlas si no existen
-            // Esta parte requiere lógica adicional con el modelo Tag (la omitimos por brevedad ahora)
-            // Por ahora, lo dejamos vacío para simplificar
+            const tagNames = tags.split(',') // 1. Separa los nombres por coma
+                                 .map(tag => tag.trim().toLowerCase()) // 2. Limpia (quita espacios, minúsculas)
+                                 .filter(Boolean); // 3. Filtra nombres vacíos
+
+            // 4. Procesa cada nombre: busca o crea la tag y obtiene su ID
+            tagIds = await Promise.all( // Ejecuta las búsquedas/creaciones en paralelo
+                tagNames.map(async (name) => {
+                    // Busca una tag con ese nombre. Si no existe, la crea (upsert: true).
+                    // $setOnInsert asegura que createdBy solo se añada si es una tag nueva.
+                    const tag = await Tag.findOneAndUpdate(
+                        { name: name }, // Filtro: busca por nombre (case-insensitive por el schema)
+                        { $setOnInsert: { name: name, createdBy: req.user._id } }, // Datos a insertar si no existe
+                        { upsert: true, new: true, runValidators: true } // Opciones: crear si no existe, devolver el doc nuevo/encontrado, correr validaciones
+                    );
+                    return tag._id; // Devuelve el ID de la tag encontrada o creada
+                })
+            );
         }
+        // Ahora tagIds es un array con los ObjectIds de las tags correspondientes
 
 
         // 5. Guardar metadata en MongoDB
@@ -83,15 +97,15 @@ const uploadFile = async (req, res) => {
         });
 
         // 6. Enviar respuesta exitosa
-        res.status(201).json(newFile); // Devolver los datos del archivo creado
+        // Opcional: Poblar la respuesta para devolver los nombres de las tags inmediatamente
+        const populatedFile = await File.findById(newFile._id)
+                                        .populate('uploadedBy', 'username email')
+                                        .populate('tags', 'name');
+        res.status(201).json(populatedFile || newFile);
 
     } catch (error) {
         console.error('Error en uploadFile:', error);
-        // Devuelve el error específico de Cloudinary si ocurrió allí
-        if (error.message.includes('Cloudinary')) {
-             return res.status(500).json({ message: error.message });
-        }
-        // Error genérico del servidor si falla la creación en DB u otro paso
+        if (error.message.includes('Cloudinary')) { /* ... */ }
         res.status(500).json({ message: 'Error interno del servidor al procesar el archivo.' });
     }
 };
@@ -158,10 +172,19 @@ const addVideoLink = async (req, res) => {
 
     try {
         // 3. Procesar tags (misma lógica placeholder que en uploadFile)
-        let tagIds = [];
+        let tagIds = []; // Inicializa como array vacío
         if (tags && typeof tags === 'string') {
             const tagNames = tags.split(',').map(tag => tag.trim().toLowerCase()).filter(Boolean);
-            // TODO: Implementar búsqueda/creación de Tags y obtener sus IDs
+            tagIds = await Promise.all(
+                tagNames.map(async (name) => {
+                    const tag = await Tag.findOneAndUpdate(
+                        { name: name },
+                        { $setOnInsert: { name: name, createdBy: req.user._id } },
+                        { upsert: true, new: true, runValidators: true }
+                    );
+                    return tag._id;
+                })
+            );
         }
 
         // 4. Crear el documento en la colección 'files'
@@ -178,7 +201,10 @@ const addVideoLink = async (req, res) => {
         });
 
         // 5. Enviar respuesta exitosa
-        res.status(201).json(newVideoFile);
+        const populatedFile = await File.findById(newVideoFile._id)
+                                        .populate('uploadedBy', 'username email')
+                                        .populate('tags', 'name');
+        res.status(201).json(populatedFile || newVideoFile);
 
     } catch (error) {
         console.error('Error al añadir enlace de video:', error);
