@@ -75,7 +75,7 @@ const loginUser = async (req, res) => {
   try {
     // 3. Buscar al usuario por email
     // Utilizando .select('+password') porque en el modelo lo marcamos como no seleccionable por defecto
-    const user = await User.findOne({ email }).select('+password');
+    const user = await User.findOne({ email }).select('+password').populate('groups', '_id name');
 
     // 4. Verificar si el usuario existe Y si la contraseña coincide
     if (user && (await user.matchPassword(password))) {
@@ -88,6 +88,7 @@ const loginUser = async (req, res) => {
         username: user.username,
         email: user.email,
         role: user.role,
+        groups: user.groups,
         token: token
       });
     } else {
@@ -100,6 +101,19 @@ const loginUser = async (req, res) => {
   }
 };
 
+// --- Controlador para obtener datos del usuario logueado ('Me') ---
+const getUserProfile = async (req, res) => {
+  // El middleware 'protect' ya ha verificado el token y adjuntado
+  // el usuario (con grupos populados) a req.user.
+  // Simplemente devolvemos req.user.
+  if (req.user) {
+      res.status(200).json(req.user);
+  } else {
+      // Esto no debería ocurrir si protect está bien, pero por si acaso
+      res.status(404).json({ message: 'Usuario no encontrado' });
+  }
+  // No necesitas buscar en la BD aquí, protect ya lo hizo.
+};
 
-// Exportar los controladores
-export { registerUser, loginUser };
+// Asegúrate de exportar getUserProfile (o getMe)
+export { registerUser, loginUser, getUserProfile };

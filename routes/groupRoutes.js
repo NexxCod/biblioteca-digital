@@ -15,7 +15,7 @@ const router = express.Router();
 // Ruta para listar todos los grupos existentes
 // GET /api/groups/
 // Solo los admins pueden listar todos los grupos
-router.get('/', protect, admin, listGroups);
+router.get('/', protect, listGroups);
 
 // Ruta para crear un nuevo grupo
 // POST /api/groups/
