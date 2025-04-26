@@ -269,6 +269,60 @@ const deleteFolder = async (req, res) => {
     }
 };
 
+// --- NUEVO Controlador para Obtener Detalles de Carpeta ---
+const getFolderDetails = async (req, res) => {
+    const { id: folderId } = req.params;
+    const user = req.user;
+
+    if (!mongoose.Types.ObjectId.isValid(folderId)) {
+        return res.status(400).json({ message: 'ID de carpeta inválido.' });
+    }
+     if (!user) {
+         return res.status(401).json({ message: 'Usuario no autenticado.' });
+     }
+
+    try {
+        const folder = await Folder.findById(folderId)
+                                    .populate('createdBy', 'username')
+                                    .populate('assignedGroup', 'name');
+
+        if (!folder) {
+            return res.status(404).json({ message: 'Carpeta no encontrada.' });
+        }
+
+        // *** AÑADIR VERIFICACIÓN DE PERMISOS AQUÍ ***
+        // (Similar a la lógica en listFolders, basada en folder.createdBy, folder.assignedGroup y user.role/user.groups)
+        // Ejemplo simplificado (requiere ajuste a tu lógica exacta de permisos):
+        const isAdmin = user.role === 'admin';
+        const isOwner = folder.createdBy._id.toString() === user._id.toString();
+        const userGroupIds = user.groups.map(g => g._id.toString());
+        const isMemberOfGroup = folder.assignedGroup && userGroupIds.includes(folder.assignedGroup._id.toString());
+        const isPublic = !folder.assignedGroup;
+
+         let canAccess = isAdmin; // Admin siempre puede
+         if (!canAccess) {
+             if (user.role === 'docente' && (isOwner || isMemberOfGroup || isPublic)) {
+                 canAccess = true;
+             } else if (user.role === 'residente/alumno' && (isMemberOfGroup || isPublic)) {
+                 canAccess = true;
+             }
+             // Añade más lógica si es necesario
+         }
+
+
+         if (!canAccess) {
+              return res.status(403).json({ message: 'No autorizado para ver esta carpeta.' });
+         }
+        // *** FIN VERIFICACIÓN DE PERMISOS ***
+
+
+        res.status(200).json(folder);
+    } catch (error) {
+        console.error('Error obteniendo detalles de carpeta:', error);
+        res.status(500).json({ message: 'Error interno del servidor.' });
+    }
+};
+
 
 // Exportar TODOS los controladores de carpetas
-export { createFolder, listFolders, updateFolder, deleteFolder };
+export { createFolder, listFolders, updateFolder, deleteFolder, getFolderDetails };
