@@ -1,88 +1,86 @@
 // backend/server.js
+console.log("--- Backend server.js started ---"); // <<< LOG AÑADIDO
 
-// --- Importaciones ---
 import express from 'express';
+console.log("Imported express"); // <<< LOG AÑADIDO
 import 'dotenv/config';
+console.log("Imported dotenv/config"); // <<< LOG AÑADIDO
 import cors from 'cors';
+console.log("Imported cors"); // <<< LOG AÑADIDO
 import connectDB from './config/db.js';
+console.log("Imported connectDB"); // <<< LOG AÑADIDO
 import userRoutes from './routes/userRoutes.js';
+console.log("Imported userRoutes"); // <<< LOG AÑADIDO
 import fileRoutes from './routes/fileRoutes.js';
+console.log("Imported fileRoutes"); // <<< LOG AÑADIDO
 import folderRoutes from './routes/folderRoutes.js';
+console.log("Imported folderRoutes"); // <<< LOG AÑADIDO
 import tagRoutes from './routes/tagRoutes.js';
+console.log("Imported tagRoutes"); // <<< LOG AÑADIDO
 import groupRoutes from './routes/groupRoutes.js';
+console.log("Imported groupRoutes"); // <<< LOG AÑADIDO
+
 
 // --- Conexión a la Base de Datos ---
+console.log("Attempting DB connection..."); // <<< LOG AÑADIDO
+// connectDB es async, pero lo llamamos aquí para iniciarla.
+// El logging interno de connectDB dirá si tuvo éxito o falló.
 connectDB();
+console.log("DB connection attempt initiated."); // <<< LOG AÑADIDO
+
 
 // --- Inicialización de Express ---
 const app = express();
+console.log("Express app initialized."); // <<< LOG AÑADIDO
 
-app.set("trust proxy", 1);
-    
-const allowedOrigins = [
-  process.env.FRONTEND_URL,
-  'http://localhost:5173',
-  'https://frontend-biblioteca-digital-production.up.railway.app'
-];
-
-const corsOptions = {
-  origin: function (origin, callback) {
-    // Permite solicitudes sin 'origin' (ej. Postman, curl) O si el origen está en la lista blanca.
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      // Si el origen no está permitido, rechaza la solicitud.
-      console.warn(`Origen CORS no permitido: ${origin}`); // Log para depuración
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS', // Métodos HTTP permitidos (¡incluye OPTIONS!)
-  allowedHeaders: 'Origin, X-Requested-With, Content-Type, Accept, Authorization', // Cabeceras permitidas (¡incluye Authorization!)
-  credentials: true, // Si necesitas enviar/recibir cookies o cabeceras de autorización complejas
-  optionsSuccessStatus: 204 // Necesario para compatibilidad con algunos navegadores/proxies
-};
-
-// Aplica el middleware CORS con las opciones configuradas a todas las rutas.
+// --- Middlewares Esenciales ---
+console.log("Setting up CORS middleware..."); // <<< LOG AÑADIDO
+// Usando la versión simple que probaste por última vez
 app.use(cors());
+console.log("CORS middleware applied."); // <<< LOG AÑADIDO
 
-// 3. Otros middlewares esenciales
+console.log("Setting up JSON/URL-encoded middleware..."); // <<< LOG AÑADIDO
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+console.log("JSON/URL-encoded middleware applied."); // <<< LOG AÑADIDO
+
 
 // --- Rutas ---
+console.log("Setting up routes..."); // <<< LOG AÑADIDO
 app.get('/', (req, res) => {
-  res.send('API de Imagenología funcionando!');
+    console.log(">>> GET / request received"); // <<< LOG AÑADIDO EN HANDLER
+    res.send('API de Imagenología funcionando!');
 });
 
-// >>> Monta las rutas DESPUÉS de los manejadores OPTIONS específicos y el CORS general <<<
 app.use('/api/users', userRoutes);
+console.log("Applied /api/users route"); // <<< LOG AÑADIDO
 app.use('/api/files', fileRoutes);
+console.log("Applied /api/files route"); // <<< LOG AÑADIDO
 app.use('/api/folders', folderRoutes);
+console.log("Applied /api/folders route"); // <<< LOG AÑADIDO
 app.use('/api/tags', tagRoutes);
+console.log("Applied /api/tags route"); // <<< LOG AÑADIDO
 app.use('/api/groups', groupRoutes);
+console.log("Applied /api/groups route"); // <<< LOG AÑADIDO
+console.log("Route setup complete."); // <<< LOG AÑADIDO
 
-// --- Puerto y Servidor ---
+
+// --- Definición del Puerto ---
+// Railway proporciona la variable de entorno PORT.
 const PORT = process.env.PORT || 5000;
+console.log(`PORT variable set to: ${PORT}`); // <<< LOG AÑADIDO
 
-const server = app.listen(PORT, () => {
-  console.log(`Servidor CORRIENDO y escuchando en el puerto ${PORT}`);
+// --- Iniciar el Servidor ---
+console.log("Attempting to start server listening..."); // <<< LOG AÑADIDO
+// Añadimos '0.0.0.0', que a menudo es necesario para que el servidor
+// escuche conexiones externas en contenedores/entornos cloud.
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ Servidor corriendo en el puerto ${PORT} y escuchando en 0.0.0.0`); // <<< LOG MODIFICADO
 });
 
-server.on('error', (error) => {
-  console.error('Error en el evento "error" del servidor:', error);
+app.on('error', (error) => {
+  // Este evento 'error' en app es menos común para errores de inicio
+  console.error('❌ Error en el evento "error" de la app Express:', error); // <<< LOG MODIFICADO
 });
 
-// Opcional: Listener para SIGTERM para cierre ordenado
-process.on('SIGTERM', () => {
-  console.log('!!! Señal SIGTERM recibida. Intentando cierre ordenado...');
-  server.close(() => {
-    console.log('Servidor HTTP cerrado.');
-   
-    process.exit(0); // Salir después de cerrar el servidor
-  });
-  // Forzar salida si el cierre ordenado tarda mucho
-  setTimeout(() => {
-    console.error('Cierre ordenado falló o tardó demasiado. Forzando salida.');
-    process.exit(1);
-  }, 10000); // 10 segundos
-});
+console.log("--- Backend server.js finished synchronous execution ---"); // <<< LOG AÑADIDO
