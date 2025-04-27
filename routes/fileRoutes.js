@@ -16,18 +16,17 @@ const storage = multer.memoryStorage();
 
 // Filtro opcional para tipos de archivo (ejemplo: permitir PDF, Word, JPG, PNG)
 const fileFilter = (req, file, cb) => {
-  const allowedTypes = /pdf|doc|docx|jpg|jpeg|png/;
-  const mimetype = allowedTypes.test(file.mimetype);
-  const extname = allowedTypes.test(
-    file.originalname.split(".").pop().toLowerCase()
-  );
+  const allowedTypes = /pdf|doc|docx|xls|xlsx|ppt|pptx|jpe?g|png|gif/i;
+  const extension = file.originalname.split('.').pop().toLowerCase();
+  const validExtension = allowedTypes.test(extension);
+  const validMimeType = allowedTypes.test(file.mimetype);
 
-  if (mimetype && extname) {
+  if (validExtension) {
     return cb(null, true);
   }
   cb(
     new Error(
-      "Error: Tipo de archivo no soportado. Solo se permiten PDF, DOC, DOCX, JPG, JPEG, PNG."
+      "Error: Tipo de archivo no soportado. Permitidos: PDF, Word, Excel, PowerPoint, JPG, PNG, GIF."
     ),
     false
   );
