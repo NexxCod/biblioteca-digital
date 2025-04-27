@@ -3,6 +3,7 @@ import Folder from '../models/Folder.js'; // Importa el modelo Folder
 import Group from '../models/Group.js'; // <--- Importar Group para validación
 import File from '../models/File.js';
 import mongoose from 'mongoose';
+import User from '../models/User.js';
 
 // --- Controlador para Crear Carpeta ---
 const createFolder = async (req, res) => {
@@ -294,8 +295,12 @@ const getFolderDetails = async (req, res) => {
         // (Similar a la lógica en listFolders, basada en folder.createdBy, folder.assignedGroup y user.role/user.groups)
         // Ejemplo simplificado (requiere ajuste a tu lógica exacta de permisos):
         const isAdmin = user.role === 'admin';
-        const isOwner = folder.createdBy._id.toString() === user._id.toString();
-        const userGroupIds = user.groups.map(g => g._id.toString());
+        const isOwner = folder.createdBy && folder.createdBy._id.toString() === user._id.toString();
+
+        const userGroupIds = user.groups
+            .map(g => g ? g._id.toString() : null) // Mapear a ID string o null si el grupo es null
+            .filter(id => id !== null); // Eliminar entradas null
+            
         const isMemberOfGroup = folder.assignedGroup && userGroupIds.includes(folder.assignedGroup._id.toString());
         const isPublic = !folder.assignedGroup;
 
