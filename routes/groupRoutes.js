@@ -7,7 +7,9 @@ import {
     createGroup,
     listGroups,
     addMemberToGroup,
-    removeMemberFromGroup
+    removeMemberFromGroup,
+    updateGroup, // <-- Importar el controlador de actualizar
+    deleteGroup // <-- Importar el controlador de eliminar
 } from '../controllers/groupController.js';
 
 const router = express.Router();
@@ -31,7 +33,18 @@ router.post('/:groupId/members', protect, admin, addMemberToGroup);
 // DELETE /api/groups/:groupId/members/:userId
 router.delete('/:groupId/members/:userId', protect, admin, removeMemberFromGroup);
 
-// Aquí irán rutas para ver detalles de un grupo, actualizarlo,
-// añadir/quitar miembros, y eliminar grupos.
+// --- RUTAS PARA GESTIÓN DE GRUPO INDIVIDUAL POR ID (Admin Only) ---
+
+// Ruta para obtener detalles de un grupo por ID (Opcional, si necesitas una vista de detalle)
+// GET /api/groups/:id
+// router.get('/:id', protect, admin, getGroupDetails); // Asumiendo que tengas o crees este controlador
+
+// Ruta para actualizar un grupo existente (Admin Only)
+// PUT /api/groups/:id
+router.put('/:id', protect, admin, updateGroup); // <-- NUEVA RUTA PUT
+
+// Ruta para eliminar un grupo existente (Admin Only)
+// DELETE /api/groups/:id
+router.delete('/:id', protect, admin, deleteGroup); // <-- NUEVA RUTA DELETE
 
 export default router;
