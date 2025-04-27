@@ -101,7 +101,7 @@ const listFolders = async (req, res) => {
             const userGroupIds = user.groups.map(group => group._id); // Extraer IDs de los grupos populados
 
             let permissionFilter = {};
-            if (user.role === 'residente/alumno') {
+            if (user.role === 'residente') {
                 // Becado ve: (Públicas O Asignadas a sus Grupos)
                 permissionFilter = {
                     $or: [
@@ -119,7 +119,7 @@ const listFolders = async (req, res) => {
                 };
             } else {
                 // Rol desconocido o sin permisos definidos (no debería pasar)
-                return res.status(403).json({ message: 'Rol de usuario no tiene permisos definidos para listar.' });
+                return res.status(403).json({ message: 'Tu registro está completo. Por favor, contacta al administrador para activar tu cuenta.' });
             }
 
             // Combinar filtro base y filtro de permisos
@@ -303,7 +303,7 @@ const getFolderDetails = async (req, res) => {
          if (!canAccess) {
              if (user.role === 'docente' && (isOwner || isMemberOfGroup || isPublic)) {
                  canAccess = true;
-             } else if (user.role === 'residente/alumno' && (isMemberOfGroup || isPublic)) {
+             } else if (user.role === 'residente' && (isMemberOfGroup || isPublic)) {
                  canAccess = true;
              }
              // Añade más lógica si es necesario

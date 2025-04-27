@@ -222,7 +222,7 @@ const getFilesByFolder = async (req, res) => {
     const isAdmin = user.role === "admin";
     if (!isAdmin) {
       const userGroupIds = user.groups.map((group) => group._id);
-      if (user.role === "residente/alumno") {
+      if (user.role === "residente") {
         permissionFilter = {
           $or: [
             { assignedGroup: null },

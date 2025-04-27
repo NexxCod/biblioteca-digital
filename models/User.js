@@ -25,8 +25,8 @@ const userSchema = new mongoose.Schema({
     },
     role: {
         type: String,
-        enum: ['admin', 'docente', 'residente/alumno'],
-        default: 'residente/alumno'
+        enum: ['admin', 'docente', 'residente', 'usuario'],
+        default: 'usuario'
     },
     groups: [{
         type: mongoose.Schema.Types.ObjectId,
