@@ -18,7 +18,7 @@ const fileSchema = new mongoose.Schema({
     },
     cloudinaryId: {
         type: String,
-        required: function() { return this.fileType !== 'video_link'; }
+        required: function() { return this.fileType !== 'video_link' && this.fileType !== 'generic_link'; }
     },
     secureUrl: { // URL (Cloudinary o YouTube)
         type: String,
@@ -26,7 +26,7 @@ const fileSchema = new mongoose.Schema({
     },
     size: { // Tamaño en bytes
         type: Number,
-        required: function() { return this.fileType !== 'video_link'; }
+        required: function() { return this.fileType !== 'video_link' && this.fileType !== 'generic_link'; }
     },
     folder: {
         type: mongoose.Schema.Types.ObjectId,

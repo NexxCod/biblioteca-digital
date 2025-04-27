@@ -5,7 +5,7 @@ import { protect } from "../middleware/authMiddleware.js"; // Middleware de aute
 import {
   uploadFile,
   getFilesByFolder,
-  addVideoLink,
+  addLink,
   updateFile,
   deleteFile,
 } from "../controllers/fileController.js"; // Controlador (lo crearemos a continuación)
@@ -56,9 +56,9 @@ router.post("/upload", protect, upload.single("file"), uploadFile);
 // GET /api/files?folderId=...
 router.get("/", protect, getFilesByFolder);
 
-// Añadir un enlace de video
+// Añadir un enlace
 // POST /api/files/add-link
-router.post("/add-link", protect, addVideoLink);
+router.post("/add-link", protect, addLink);
 
 // Actualizar un archivo/enlace existente
 // PUT /api/files/:id

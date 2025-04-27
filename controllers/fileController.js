@@ -330,28 +330,23 @@ const getFilesByFolder = async (req, res) => {
   }
 };
 
-//  Controlador para Añadir Enlace de Video ---
-const addVideoLink = async (req, res) => {
+//  Controlador para Añadir Enlace  ---
+const addLink = async (req, res) => {
   // 1. Obtener datos del cuerpo (esperamos JSON aquí, no form-data)
-  const { youtubeUrl, title, description, folderId, tags, assignedGroupId } =
+  const { url, title, description, folderId, tags, assignedGroupId } =
     req.body;
 
   // 2. Validación básica
-  if (!youtubeUrl || !title || !folderId) {
-    return res
-      .status(400)
-      .json({ message: "Se requiere URL del video, título y folderId." });
-  }
+  if (!url || !title || !folderId) {
+    return res.status(400).json({ message: 'Se requiere URL, título y folderId.' });
+}
 
   // Validación simple de formato de URL de YouTube (puede ser más robusta)
-  if (
-    !youtubeUrl.includes("youtube.com/") &&
-    !youtubeUrl.includes("youtu.be/")
-  ) {
-    return res.status(400).json({
-      message: "La URL proporcionada no parece ser válida de YouTube.",
-    });
-  }
+  try {
+    new URL(url); // Intenta crear un objeto URL para validar formato básico
+} catch (_) {
+    return res.status(400).json({ message: 'La URL proporcionada no es válida.' });
+}
 
   // Validación de assignedGroupId (NUEVO) - Igual que en createFolder
   let validatedGroupId = null;
@@ -394,7 +389,18 @@ const addVideoLink = async (req, res) => {
       .json({ message: "FolderId inválido o error al buscar carpeta." });
   }
 
+  
+
   try {
+     // --- DETECCIÓN DE TIPO DE LINK ---
+     let linkFileType = 'generic_link'; // Por defecto
+     // Regex simple para detectar URLs de YouTube (youtu.be o youtube.com/watch?v=...)
+     const youtubeRegex = /^(https?:\/\/)?(www\.youtube\.com|youtu\.be)\/.+$/;
+     if (youtubeRegex.test(url)) {
+         linkFileType = 'video_link'; // Es YouTube
+     }
+     // --- FIN DETECCIÓN ---
+
     // 3. Procesar tags (misma lógica placeholder que en uploadFile)
     let tagIds = []; // Inicializa como array vacío
     if (tags && typeof tags === "string") {
@@ -415,12 +421,12 @@ const addVideoLink = async (req, res) => {
     }
 
     // 4. Crear el documento en la colección 'files'
-    const newVideoFile = await File.create({
+    const newLinkFile = await File.create({
       filename: title, // Usamos el título como nombre de archivo
       description: description || "",
-      fileType: "video_link", // ¡Tipo específico!
+      fileType: linkFileType, // ¡Tipo específico!
       cloudinaryId: null, // No aplica para enlaces
-      secureUrl: youtubeUrl, // Guardamos la URL de YouTube aquí
+      secureUrl: url.trim(), // Guardamos la URL de YouTube aquí
       size: 0, // No aplica
       folder: folderId,
       tags: tagIds, // Usamos el array (vacío por ahora)
@@ -429,13 +435,13 @@ const addVideoLink = async (req, res) => {
     });
 
     // 5. Enviar respuesta exitosa
-    const populatedFile = await File.findById(newVideoFile._id)
+    const populatedFile = await File.findById(newLinkFile._id)
       .populate("uploadedBy", "username email")
       .populate("tags", "name")
       .populate("assignedGroup", "name");
-    res.status(201).json(populatedFile || newVideoFile);
+    res.status(201).json(populatedFile || newLinkFile);
   } catch (error) {
-    console.error("Error al añadir enlace de video:", error);
+    console.error("Error al añadir enlace:", error);
     res
       .status(500)
       .json({ message: "Error interno del servidor al añadir el enlace." });
@@ -588,7 +594,7 @@ const deleteFile = async (req, res) => {
     }
 
     // 3. Eliminar de Cloudinary SI NO es un video_link
-    if (file.fileType !== "video_link" && file.cloudinaryId) {
+    if (file.fileType !== "video_link" || "generic_link" && file.cloudinaryId) {
       try {
         // Intentamos borrar de Cloudinary usando solo el public_id
         // Añadimos { invalidate: true } para intentar invalidar caché de CDN más rápido
@@ -630,4 +636,4 @@ const deleteFile = async (req, res) => {
 };
 
 // Exportar TODOS los controladores del archivo
-export { uploadFile, getFilesByFolder, addVideoLink, updateFile, deleteFile };
+export { uploadFile, getFilesByFolder, addLink, updateFile, deleteFile };
