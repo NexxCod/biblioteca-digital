@@ -205,7 +205,7 @@ const uploadFile = async (req, res) => {
 //  Controlador para Listar Archivos por Carpeta ---
 const getFilesByFolder = async (req, res) => {
   // 1. Extraer TODOS los posibles query parameters
-  const { folderId, fileType, tags, startDate, endDate, search } = req.query;
+  const { folderId, fileType, tags, startDate, endDate, search, sortBy, sortOrder } = req.query;
   const user = req.user;
 
   // Validación base (folderId sigue siendo requerido por ahora)
@@ -265,7 +265,7 @@ const getFilesByFolder = async (req, res) => {
 
       if (tagIdArray.length > 0) {
         // $all: el archivo DEBE tener TODAS las tags especificadas
-        criteriaFilter.tags = { $all: tagIdArray };
+        criteriaFilter.tags = { $in: tagIdArray };
         // Si quisieras que coincida con CUALQUIERA de las tags, usarías:
         // criteriaFilter.tags = { $in: tagIdArray };
       }
@@ -311,16 +311,28 @@ const getFilesByFolder = async (req, res) => {
       // Los demás usan los criterios Y ADEMÁS sus permisos
       finalFilter = { $and: [criteriaFilter, permissionFilter] };
     }
+
+    // --- 5. Construir opciones de Ordenación (NUEVO) ---
+    let sortOptions = {};
+    const validSortBy = ['createdAt', 'filename']; // Campos permitidos para ordenar
+    const validSortOrder = ['asc', 'desc']; // Direcciones permitidas
+
+    const sBy = validSortBy.includes(sortBy) ? sortBy : 'createdAt'; // Valor por defecto
+    const sOrder = validSortOrder.includes(sortOrder) ? sortOrder : 'desc'; // Valor por defecto
+
+    sortOptions[sBy] = sOrder === 'asc' ? 1 : -1; // 1 para ascendente, -1 para descendente
+    // --------------------------------------------------
     
 
-    // 5. Ejecutar la Consulta
+    // 6. Ejecutar la Consulta
     const files = await File.find(finalFilter)
-      .sort({ createdAt: -1 })
+    .sort(sortOptions)
+
       .populate("uploadedBy", "username email")
       .populate("tags", "name")
       .populate("assignedGroup", "name");
 
-    // 6. Enviar Respuesta
+    // 7. Enviar Respuesta
     res.status(200).json(files);
   } catch (error) {
     console.error("Error al obtener archivos por carpeta:", error);
