@@ -16,13 +16,13 @@ const fileSchema = new mongoose.Schema({
         required: true,
         enum: ['pdf', 'word', 'image', 'excel', 'pptx', 'video_link', 'generic_link', 'other']
     },
-    cloudinaryId: {
+    driveFileId: { // CAMBIADO/AÑADIDO
         type: String,
         required: function() { return this.fileType !== 'video_link' && this.fileType !== 'generic_link'; }
     },
-    secureUrl: { // URL (Cloudinary o YouTube)
+    secureUrl: { 
         type: String,
-        required: true
+        required: function() { return this.fileType === 'video_link' || this.fileType === 'generic_link'; }
     },
     size: { // Tamaño en bytes
         type: Number,

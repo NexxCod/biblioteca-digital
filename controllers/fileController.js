@@ -1,5 +1,5 @@
 // backend/controllers/fileController.js
-import cloudinary from "../config/cloudinaryConfig.js";
+import { googleDriveClient, googleDriveFolderId } from "../config/googleDriveConfig.js";
 import File from "../models/File.js";
 import Folder from "../models/Folder.js";
 import Tag from "../models/Tag.js";
@@ -98,31 +98,54 @@ const uploadFile = async (req, res) => {
   }
 
   try {
-    // 3. Función para subir el stream a Cloudinary
-    const uploadStream = (buffer) => {
-      return new Promise((resolve, reject) => {
-        // Usamos upload_stream de Cloudinary
-        const stream = cloudinary.uploader.upload_stream(
-          {
-            folder: "imagenologia_recursos", // Opcional: Carpeta dentro de Cloudinary
-            resource_type: "auto",
-            use_filename: true,
-          },
-          (error, result) => {
-            if (error) {
-              console.error("Cloudinary Upload Error:", error);
-              return reject(new Error("Error al subir archivo a Cloudinary."));
-            }
-            resolve(result);
-          }
-        );
-        // Convertimos el buffer del archivo (req.file.buffer) en un stream legible
-        streamifier.createReadStream(buffer).pipe(stream);
-      });
-    };
+    const sanitizedOriginalName = sanitizeFilename(req.file?.originalname || "");
 
-    // 4. Ejecutar la subida a Cloudinary
-    const cloudinaryResult = await uploadStream(req.file.buffer);
+    const driveResponse = await googleDriveClient.files.create({
+      requestBody: {
+        name: sanitizedOriginalName, // Nombre del archivo en Drive
+         // ID de la carpeta de Google Drive donde se subirá el archivo (desde variables de entorno)
+        parents: [googleDriveFolderId],
+         // Puedes añadir description aquí si quieres que se refleje en los metadatos de Drive
+        description: description || '',
+      },
+      media: {
+        mimeType: req.file.mimetype, // Tipo MIME del archivo
+        body: streamifier.createReadStream(req.file.buffer), // Convierte el buffer a stream
+      },
+       // Campos que quieres que te devuelva Google Drive en la respuesta
+       // webContentLink o webViewLink son útiles para acceder al archivo
+       fields: 'id, name, webContentLink, size, mimeType, parents, description',
+    });
+
+    const driveFile = driveResponse.data;
+    console.log('Archivo subido a Google Drive:', driveFile);
+
+    // --- Opcional pero Común: Crear Permiso de Lectura Público ---
+    // Esto hace que el archivo sea accesible para cualquiera con el enlace.
+    // Adapta según tus necesidades de seguridad y grupos.
+     let sharedLink = driveFile.webContentLink; // Enlace de descarga si existe
+     try {
+         const permissionResponse = await googleDriveClient.permissions.create({
+             fileId: driveFile.id,
+             requestBody: {
+                 role: 'reader', // Permiso de lectura
+                 type: 'anyone', // Para cualquier persona
+             },
+             fields: 'id, role, type', // Campos que quieres de la respuesta de permisos
+         });
+         console.log('Permiso de lectura público creado para:', driveFile.id);
+         // Google Drive puede actualizar el webContentLink después de cambiar permisos
+         // Podrías re-obtener el archivo o asumir que el webContentLink es ahora público
+         // Para mayor seguridad, podrías obtener el enlace compartible específico con Drive API si webContentLink no es suficiente
+         // const updatedFileMetadata = await googleDriveClient.files.get({fileId: driveFile.id, fields: 'webContentLink'});
+         // sharedLink = updatedFileMetadata.data.webContentLink;
+
+     } catch (permError) {
+         console.error("Error al crear permiso de lectura público:", permError);
+         // Decide si fallar la subida aquí o continuar sin enlace público
+     }
+     // --- Fin Lógica de Permiso ---
+
 
     // --- LÓGICA DE DETECCIÓN DE fileType MEJORADA ---
     let fileType = "other"; // Por defecto
@@ -144,8 +167,6 @@ const uploadFile = async (req, res) => {
       fileType = "image";
     }
 
-    const sanitizedOriginalName = sanitizeFilename(originalNameRaw);
-    
 
     // Procesar tags si vienen como string separado por comas
     let tagIds = [];
@@ -168,16 +189,14 @@ const uploadFile = async (req, res) => {
     }
 
    
-    const finalSecureUrl = cloudinaryResult.secure_url;
-   
 
     const newFile = await File.create({
-      filename: sanitizedOriginalName,
-      description: description || "",
+      filename: driveFile.name,
+      description: driveFile.description || description || "",
       fileType: fileType,
-      cloudinaryId: cloudinaryResult.public_id,
-      secureUrl: finalSecureUrl, // URL segura de Cloudinary
-      size: cloudinaryResult.bytes, // Tamaño en bytes
+      driveFileId: driveFile.id,
+      secureUrl: sharedLink || driveFile.webContentLink || driveFile.webViewLink || null, // URL segura de Cloudinary
+      size: driveFile.size || 0, 
       folder: folderId, // ID de la carpeta
       tags: tagIds, // IDs de las etiquetas (requiere lógica adicional)
       uploadedBy: req.user._id, // ID del usuario logueado (viene de 'protect')
@@ -192,13 +211,12 @@ const uploadFile = async (req, res) => {
       .populate("assignedGroup", "name");
     res.status(201).json(populatedFile || newFile);
   } catch (error) {
-    console.error("Error en uploadFile:", error);
-    if (error.message.includes("Cloudinary")) {
-      /* ... */
-    }
+    console.error("Error en uploadFile (Google Drive):", error);
+    // Manejo de errores. Podrías necesitar lógica para limpiar el archivo en Drive
+    // si la creación del documento en BD falla después de subir a Drive.
     res
       .status(500)
-      .json({ message: "Error interno del servidor al procesar el archivo." });
+      .json({ message: error?.message || "Error interno del servidor al procesar el archivo con Google Drive." });
   }
 };
 
@@ -589,9 +607,7 @@ const deleteFile = async (req, res) => {
     // 1. Encontrar el archivo/enlace existente
     const file = await File.findById(fileId);
     if (!file) {
-      // Si no se encuentra, igual devolvemos éxito (o 404 si prefieres ser estricto)
-      // ya que el resultado final (no existe) es el mismo.
-      // Devolver 204 evita que el frontend muestre un error si se hace doble clic en borrar.
+
       return res.status(204).send();
     }
 
@@ -605,40 +621,34 @@ const deleteFile = async (req, res) => {
         .json({ message: "No autorizado para eliminar este recurso." });
     }
 
-    // 3. Eliminar de Cloudinary SI NO es un video_link
-    if (file.fileType !== "video_link" || "generic_link" && file.cloudinaryId) {
+    // 3. Eliminar de Google Drive SI es un archivo físico (no un enlace externo)
+    // Usamos el campo driveFileId para saber si hay un archivo en Drive asociado
+    // Asegúrate de que tu modelo File ahora tenga driveFileId para archivos subidos
+    if (file.fileType !== "video_link" && file.fileType !== "generic_link" && file.driveFileId) {
       try {
-        // Intentamos borrar de Cloudinary usando solo el public_id
-        // Añadimos { invalidate: true } para intentar invalidar caché de CDN más rápido
-        const destructionResult = await cloudinary.uploader.destroy(
-          file.cloudinaryId,
-          { invalidate: true }
-        );
-        
-        if (
-          destructionResult.result !== "ok" &&
-          destructionResult.result !== "not found"
-        ) {
-          // Si Cloudinary da un error inesperado, podríamos decidir detenernos
-          // throw new Error('Error al eliminar archivo de Cloudinary.');
-          // O solo loggear y continuar para borrar de la BD
-          console.warn(
-            `Archivo ${file.cloudinaryId} no pudo ser eliminado de Cloudinary o no encontrado, resultado: ${destructionResult.result}`
-          );
-        }
-      } catch (cloudinaryError) {
-        console.error("Error al eliminar de Cloudinary:", cloudinaryError);
-        // Decidir si fallar aquí o continuar y solo borrar de la BD
-        // Por ahora, continuamos para borrar la referencia de la BD
-        // return res.status(500).json({ message: 'Error al eliminar archivo de Cloudinary.' });
+         // Intentamos borrar de Google Drive usando el driveFileId
+        await googleDriveClient.files.delete({
+            fileId: file.driveFileId, // Usa el ID de Google Drive
+            // supportsAllDrives: true, // Descomentar si trabajas con Shared Drives
+        });
+        console.log(`Archivo ${file.driveFileId} eliminado de Google Drive.`);
+
+      } catch (driveError) {
+        console.error("Error al eliminar de Google Drive:", driveError);
+        // Decide si fallar la eliminación total o solo loggear y continuar
+        // Si el archivo no existía en Drive, el API podría dar un error 404.
+        // Puedes chequear el código del error si quieres manejarlo específicamente.
+        // throw new Error('Error al eliminar archivo de Google Drive.'); // Opción para fallar
       }
     }
+    
 
     // 4. Eliminar de MongoDB
     await File.findByIdAndDelete(fileId);
+    console.log(`Documento de archivo ${fileId} eliminado de la BD.`);
 
     // 5. Enviar respuesta de éxito sin contenido
-    res.status(204).send(); // 204 No Content es apropiado para DELETE exitoso
+    res.status(204).send(); 
   } catch (error) {
     console.error("Error al eliminar archivo/enlace:", error);
     res
