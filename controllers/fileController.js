@@ -165,6 +165,8 @@ const uploadFile = async (req, res) => {
       fileType = "pptx";
     } else if (["jpg", "jpeg", "png", "gif"].includes(fileExtension)) {
       fileType = "image";
+    } else if (["mp4"].includes(fileExtension)) {
+      fileType = "video";
     }
 
 
@@ -195,7 +197,7 @@ const uploadFile = async (req, res) => {
       description: driveFile.description || description || "",
       fileType: fileType,
       driveFileId: driveFile.id,
-      secureUrl: sharedLink || driveFile.webContentLink || driveFile.webViewLink || null, // URL segura de Cloudinary
+      secureUrl: sharedLink || driveFile.webContentLink || driveFile.webViewLink || null, 
       size: driveFile.size || 0, 
       folder: folderId, // ID de la carpeta
       tags: tagIds, // IDs de las etiquetas (requiere lógica adicional)
@@ -455,7 +457,7 @@ const addLink = async (req, res) => {
       filename: title, // Usamos el título como nombre de archivo
       description: description || "",
       fileType: linkFileType, // ¡Tipo específico!
-      cloudinaryId: null, // No aplica para enlaces
+      driveFileId: null, // No aplica para enlaces
       secureUrl: url.trim(), // Guardamos la URL de YouTube aquí
       size: 0, // No aplica
       folder: folderId,

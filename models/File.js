@@ -14,7 +14,7 @@ const fileSchema = new mongoose.Schema({
     fileType: {
         type: String,
         required: true,
-        enum: ['pdf', 'word', 'image', 'excel', 'pptx', 'video_link', 'generic_link', 'other']
+        enum: ['video', 'mp4', 'word', 'image', 'excel', 'pptx', 'video_link', 'generic_link', 'other']
     },
     driveFileId: { // CAMBIADO/AÑADIDO
         type: String,
