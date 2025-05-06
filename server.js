@@ -2,23 +2,24 @@
 console.log("--- Backend server.js started ---"); // <<< LOG AÑADIDO
 
 import express from 'express';
-console.log("Imported express"); // <<< LOG AÑADIDO
+
 import 'dotenv/config';
-console.log("Imported dotenv/config"); // <<< LOG AÑADIDO
+
 import cors from 'cors';
-console.log("Imported cors"); // <<< LOG AÑADIDO
+
 import connectDB from './config/db.js';
-console.log("Imported connectDB"); // <<< LOG AÑADIDO
+
 import userRoutes from './routes/userRoutes.js';
-console.log("Imported userRoutes"); // <<< LOG AÑADIDO
+
 import fileRoutes from './routes/fileRoutes.js';
-console.log("Imported fileRoutes"); // <<< LOG AÑADIDO
+
 import folderRoutes from './routes/folderRoutes.js';
-console.log("Imported folderRoutes"); // <<< LOG AÑADIDO
+
 import tagRoutes from './routes/tagRoutes.js';
-console.log("Imported tagRoutes"); // <<< LOG AÑADIDO
+
 import groupRoutes from './routes/groupRoutes.js';
-console.log("Imported groupRoutes"); // <<< LOG AÑADIDO
+
+
 
 
 // --- Conexión a la Base de Datos ---
@@ -84,3 +85,4 @@ app.on('error', (error) => {
 });
 
 console.log("--- Backend server.js finished synchronous execution ---"); // <<< LOG AÑADIDO
+

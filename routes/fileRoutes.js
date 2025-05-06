@@ -8,6 +8,7 @@ import {
   addLink,
   updateFile,
   deleteFile,
+  handleStorageRequest,
 } from "../controllers/fileController.js"; // Controlador (lo crearemos a continuación)
 
 // --- Configuración de Multer ---
@@ -67,5 +68,7 @@ router.put('/:id', protect, updateFile);
 // Eliminar un archivo/enlace existente
 // DELETE /api/files/:id
 router.delete('/:id', protect, deleteFile);
+
+router.get('/drive/storage', handleStorageRequest);
 
 export default router;

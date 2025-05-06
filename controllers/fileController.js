@@ -7,6 +7,7 @@ import Group from "../models/Group.js";
 import mongoose from "mongoose";
 import streamifier from "streamifier";
 import path from "path";
+import { getGoogleDriveStorageQuota } from '../utils/getDriveStorage.js';
 
 // --- Función auxiliar para sanitizar nombres de archivo (Simplificada) ---
 const sanitizeFilename = (filename) => {
@@ -142,7 +143,15 @@ const uploadFile = async (req, res) => {
 
      } catch (permError) {
          console.error("Error al crear permiso de lectura público:", permError);
-         // Decide si fallar la subida aquí o continuar sin enlace público
+       // *** Log Detallado para Error de Permisos ***
+       console.error("------ ERROR AL CREAR PERMISO DE LECTURA EN DRIVE ------");
+       console.error("Mensaje:", permError.message);
+       console.error("Código:", permError.code);
+       console.error("Errores detallados:", permError.errors);
+       console.error("Stack:", permError.stack);
+       console.error("Error Completo (stringify):", JSON.stringify(permError, null, 2));
+       console.error('------------------------------------------------------');
+       // Decidir si continuar o no. Por ahora, sólo logueamos el error.
      }
      // --- Fin Lógica de Permiso ---
 
@@ -167,7 +176,17 @@ const uploadFile = async (req, res) => {
       fileType = "image";
     } else if (["mp4"].includes(fileExtension)) {
       fileType = "video";
-    }
+    } else if ([
+      "mp3",
+      "aac",
+      "wav",
+      "flac",
+      "aiff",
+      "alac",
+      "ogg"
+    ].includes(fileExtension)) {
+      fileType = "audio";
+    } 
 
 
     // Procesar tags si vienen como string separado por comas
@@ -212,15 +231,40 @@ const uploadFile = async (req, res) => {
       .populate("tags", "name")
       .populate("assignedGroup", "name");
     res.status(201).json(populatedFile || newFile);
-  } catch (error) {
-    console.error("Error en uploadFile (Google Drive):", error);
-    // Manejo de errores. Podrías necesitar lógica para limpiar el archivo en Drive
-    // si la creación del documento en BD falla después de subir a Drive.
-    res
-      .status(500)
-      .json({ message: error?.message || "Error interno del servidor al procesar el archivo con Google Drive." });
-  }
-};
+  } catch (error) { // *** CAPTURA DE ERROR PRINCIPAL CORREGIDA ***
+      console.error('------ ERROR EN EL PROCESO DE SUBIDA (uploadFile) ------');
+    
+        // Verificar si el error viene de la API de Google (suele tener 'code' y 'errors')
+        if (error.code && error.errors) {
+             console.error(">>> Error detectado de la API de Google <<<");
+             console.error("Mensaje Principal API:", error.message);
+             console.error("Código HTTP API:", error.code);
+             console.error("Errores Detallados API:", error.errors);
+             // Imprimir el 'reason' específico si existe, ¡es clave!
+             if (error.errors && error.errors.length > 0) {
+                 console.error("Razón específica del error API:", error.errors[0].reason);
+                 console.error("Dominio del error API:", error.errors[0].domain);
+             }
+        } else {
+             // Error general (puede ser de Mongoose, código JS, etc.)
+             console.error(">>> Error general del servidor <<<");
+             console.error("Mensaje:", error.message);
+        }
+    
+        // Loguear siempre el stack trace y el objeto completo para diagnóstico
+        console.error("Stack Trace Completo:", error.stack);
+        console.error("Objeto de Error Completo (stringify):", JSON.stringify(error, null, 2));
+      console.error('------------------------------------------------------');
+    
+        // Enviar respuesta de error genérica al cliente
+      res.status(500).json({ // Usar 500 como default, o error.code si es un error de API HTTP
+            message: "Error interno del servidor al procesar el archivo.",
+            // Opcional: Enviar detalles MUY limitados o un código de error para rastreo
+            // NUNCA enviar el error.stack o detalles internos sensibles al cliente en producción
+            errorRef: "UPLOAD_FAIL" // Un código que puedes buscar en tus logs
+        });
+     }
+    };
 
 //  Controlador para Listar Archivos por Carpeta ---
 const getFilesByFolder = async (req, res) => {
@@ -659,5 +703,15 @@ const deleteFile = async (req, res) => {
   }
 };
 
+async function handleStorageRequest(req, res) {
+  try {
+    const storageInfo = await getGoogleDriveStorageQuota();
+    res.json({ storageQuota: storageInfo });
+  } catch (error) {
+    console.error('Error al procesar la solicitud de almacenamiento:', error);
+    res.status(500).json({ error: 'No se pudo obtener la información del almacenamiento.' });
+  }
+}
+
 // Exportar TODOS los controladores del archivo
-export { uploadFile, getFilesByFolder, addLink, updateFile, deleteFile };
+export { uploadFile, getFilesByFolder, addLink, updateFile, deleteFile, handleStorageRequest };
