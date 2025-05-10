@@ -8,7 +8,12 @@ import {
     getUsers, // Importar nuevo controlador
     getUserById, // Importar nuevo controlador
     updateUser, // Importar nuevo controlador
-    deleteUser // Importar nuevo controlador
+    deleteUser, // Importar nuevo controlador
+    verifyEmail,           // NUEVO
+    forgotPassword,        // NUEVO
+    resetPassword,         // NUEVO
+    changePassword,        // NUEVO
+    resendVerificationEmail // NUEVO
 } from '../controllers/userController.js';
 
 const router = express.Router();
@@ -21,6 +26,12 @@ router.post('/login', loginUser);
 
 // NUEVA RUTA para obtener datos del usuario logueado
 router.get('/me', protect, getUserProfile);
+
+router.get('/verify-email/:token', verifyEmail); // Para verificar el email
+router.post('/forgot-password', forgotPassword);    // Para solicitar restablecimiento
+router.post('/reset-password/:token', resetPassword); // Para restablecer con el token
+router.put('/change-password', protect, changePassword); // Para cambiar contraseña (logueado)
+router.post('/resend-verification', resendVerificationEmail); // Para reenviar email de verificación
 
 // Ruta para listar todos los usuarios
 // GET /api/users/

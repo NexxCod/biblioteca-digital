@@ -20,7 +20,6 @@ const fileFilter = (req, file, cb) => {
   const allowedTypes = /pdf|doc|docx|xls|xlsx|ppt|pptx|jpe?g|png|gif|mp4|mp3|aac|wav|flac|aiff|alac|ogg/i;
   const extension = file.originalname.split('.').pop().toLowerCase();
   const validExtension = allowedTypes.test(extension);
-  const validMimeType = allowedTypes.test(file.mimetype);
 
   if (validExtension) {
     return cb(null, true);
