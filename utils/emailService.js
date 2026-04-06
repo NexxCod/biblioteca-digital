@@ -1,51 +1,73 @@
-import nodemailer from "nodemailer";
-import dotenv from "dotenv";
+import { Resend } from "resend";
 
-dotenv.config();
-
-// 🔥 Configurar Nodemailer con credenciales desde `.env`
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: parseInt(process.env.SMTP_PORT, 10),
-  secure: process.env.SMTP_SECURE === "true", // Si es `true`, usa SSL; si es `false`, usa STARTTLS
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
-
-// ✅ Verificar la conexión al iniciar
-transporter.verify((error, success) => {
-  if (error) {
-    console.error("❌ Error de conexión SMTP:", error);
-  } else {
-    console.log("✅ Servidor SMTP listo para enviar correos.");
+class EmailServiceConfigError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "EmailServiceConfigError";
+    this.statusCode = 503;
   }
-});
+}
 
-// 📌 Función reutilizable para enviar correos
-const sendEmail = async (to, subject, htmlContent, textContent = '') => {
-  const mailOptions = {
-    from: `"Biblioteca Imagenología UDP" <${process.env.SMTP_FROM}>`,
-    to: to, // Dirección del destinatario
-    subject: subject, // Asunto
-    text: textContent || htmlContent.replace(/<[^>]*>?/gm, ''), // Versión en texto plano (opcional pero recomendable)
-    html: htmlContent, // Contenido HTML
-  };
+const getResendClient = () => {
+  const apiKey = process.env.RESEND_API_KEY;
 
+  if (!apiKey) {
+    throw new EmailServiceConfigError(
+      "Servicio de correo no configurado: falta RESEND_API_KEY."
+    );
+  }
+
+  return new Resend(apiKey);
+};
+
+const getFromAddress = () => {
+  const from = process.env.EMAIL_FROM;
+
+  if (!from) {
+    throw new EmailServiceConfigError(
+      "Servicio de correo no configurado: falta EMAIL_FROM."
+    );
+  }
+
+  return from;
+};
+
+const stripHtml = (htmlContent = "") => htmlContent.replace(/<[^>]*>?/gm, "").trim();
+
+const sendEmail = async (to, subject, htmlContent, textContent = "") => {
   try {
-    const info = await transporter.sendMail(mailOptions);
-    console.log('Correo enviado: %s', info.messageId);
-    return info;
+    const resend = getResendClient();
+    const from = getFromAddress();
+
+    const { data, error } = await resend.emails.send({
+      from,
+      to,
+      subject,
+      html: htmlContent,
+      text: textContent || stripHtml(htmlContent),
+    });
+
+    if (error) {
+      console.error("Error al enviar correo con Resend:", error);
+      throw new Error(error.message || "No se pudo enviar el correo.");
+    }
+
+    console.log(`Correo enviado correctamente con Resend. ID: ${data?.id ?? "sin-id"}`);
+    return data;
   } catch (error) {
-    console.error('Error al enviar correo:', error);
-    throw new Error('No se pudo enviar el correo.');
+    if (error instanceof EmailServiceConfigError) {
+      console.error(error.message);
+      throw error;
+    }
+
+    console.error("Error inesperado en sendEmail:", error);
+    throw new Error("No se pudo enviar el correo.");
   }
 };
 
 export const sendVerificationEmail = async (userEmail, token) => {
   const verificationLink = `${process.env.FRONTEND_URL}/verify-email/${token}`;
-  const subject = 'Verifica tu dirección de correo electrónico';
+  const subject = "Verifica tu dirección de correo electrónico";
   const htmlContent = `
     <p>Hola,</p>
     <p>Gracias por registrarte. Por favor, haz clic en el siguiente enlace para verificar tu correo electrónico:</p>
@@ -53,12 +75,13 @@ export const sendVerificationEmail = async (userEmail, token) => {
     <p>Si no te registraste en nuestra aplicación, por favor ignora este mensaje.</p>
     <p>Este enlace expirará en 24 horas.</p>
   `;
-  await sendEmail(userEmail, subject, htmlContent);
+
+  return sendEmail(userEmail, subject, htmlContent);
 };
 
 export const sendPasswordResetEmail = async (userEmail, token) => {
   const resetLink = `${process.env.FRONTEND_URL}/reset-password/${token}`;
-  const subject = 'Restablecimiento de contraseña';
+  const subject = "Restablecimiento de contraseña";
   const htmlContent = `
     <p>Hola,</p>
     <p>Has solicitado restablecer tu contraseña. Haz clic en el siguiente enlace para continuar:</p>
@@ -66,7 +89,9 @@ export const sendPasswordResetEmail = async (userEmail, token) => {
     <p>Si no solicitaste un restablecimiento de contraseña, por favor ignora este mensaje.</p>
     <p>Este enlace expirará en 1 hora.</p>
   `;
-  await sendEmail(userEmail, subject, htmlContent);
+
+  return sendEmail(userEmail, subject, htmlContent);
 };
 
+export { EmailServiceConfigError };
 export default sendEmail;

@@ -8,6 +8,7 @@ import crypto from "crypto"; // Para hashear tokens recibidos
 import {
   sendVerificationEmail,
   sendPasswordResetEmail,
+  EmailServiceConfigError,
 } from "../utils/emailService.js";
 
 // Función auxiliar para generar el token JWT
@@ -18,6 +19,16 @@ const generateToken = (userId) => {
     { expiresIn: "30d" }
   );
 };
+
+const generateAndSendVerificationEmail = async (user) => {
+  const verificationToken = user.generateEmailVerificationToken();
+  await user.save({ validateBeforeSave: false });
+  await sendVerificationEmail(user.email, verificationToken);
+};
+
+const isEmailServiceConfigError = (error) =>
+  error instanceof EmailServiceConfigError ||
+  error?.name === "EmailServiceConfigError";
 
 // --- Controlador para Registrar Usuario ---
 const registerUser = async (req, res) => {
@@ -51,18 +62,7 @@ const registerUser = async (req, res) => {
       password,
     });
 
-    const verificationToken = user.generateEmailVerificationToken(); // Genera y guarda token hasheado
-    await user.save(); // Guarda el usuario con el token de verificación
-
-    // Enviar correo de verificación (sin bloquear la respuesta al cliente)
-    sendVerificationEmail(user.email, verificationToken)
-      .then(() => console.log(`Correo de verificación enviado a ${user.email}`))
-      .catch((err) =>
-        console.error(
-          `Error enviando correo de verificación a ${user.email}:`,
-          err
-        )
-      );
+    await generateAndSendVerificationEmail(user);
 
     // No generamos token JWT aquí, el usuario debe verificar su email primero
     res.status(201).json({
@@ -73,8 +73,15 @@ const registerUser = async (req, res) => {
   } catch (error) {
     console.error('Error en registro:', error);
     if (error.code === 11000) { // Error de duplicado de MongoDB
-        return res.status(400).json({ message: 'El email o nombre de usuario ya está en uso (desde catch).' });
+      return res.status(400).json({ message: 'El email o nombre de usuario ya está en uso (desde catch).' });
     }
+
+    if (isEmailServiceConfigError(error)) {
+      return res.status(503).json({
+        message: 'El servicio de correo no está disponible temporalmente. Inténtalo más tarde.',
+      });
+    }
+
     res.status(500).json({ message: 'Error interno del servidor al registrar usuario.' });
   }
 };
@@ -475,7 +482,11 @@ const forgotPassword = async (req, res) => {
         await sendPasswordResetEmail(user.email, resetToken);
         console.log(`Correo de restablecimiento enviado a ${user.email}`);
       } catch (emailError) {
-        console.error(`Error enviando correo de restablecimiento a ${user.email}:`, emailError);
+        if (isEmailServiceConfigError(emailError)) {
+          console.error('Servicio de correo no configurado para restablecimiento de contraseña.');
+        } else {
+          console.error(`Error enviando correo de restablecimiento a ${user.email}:`, emailError);
+        }
         // No falles la petición principal por un error de email, pero loguealo.
         // El usuario no sabrá si el correo se envió o no, pero el token está guardado.
       }
@@ -600,16 +611,16 @@ const resendVerificationEmail = async (req, res) => {
             return res.status(400).json({ message: 'Este correo electrónico ya ha sido verificado.' });
         }
 
-        // Generar nuevo token
-        const verificationToken = user.generateEmailVerificationToken();
-        await user.save({ validateBeforeSave: false });
-
-        // Enviar correo
-        await sendVerificationEmail(user.email, verificationToken);
+        await generateAndSendVerificationEmail(user);
         res.status(200).json({ message: 'Se ha enviado un nuevo correo de verificación.' });
 
     } catch (error) {
         console.error('Error reenviando correo de verificación:', error);
+        if (isEmailServiceConfigError(error)) {
+          return res.status(503).json({
+            message: 'El servicio de correo no está disponible temporalmente. Inténtalo más tarde.',
+          });
+        }
         res.status(500).json({ message: 'Error interno del servidor al reenviar el correo.' });
     }
 };
