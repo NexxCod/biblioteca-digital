@@ -1,5 +1,3 @@
-import { Resend } from "resend";
-
 class EmailServiceConfigError extends Error {
   constructor(message) {
     super(message);
@@ -8,7 +6,7 @@ class EmailServiceConfigError extends Error {
   }
 }
 
-const getResendClient = () => {
+const getResendApiKey = () => {
   const apiKey = process.env.RESEND_API_KEY;
 
   if (!apiKey) {
@@ -17,7 +15,7 @@ const getResendClient = () => {
     );
   }
 
-  return new Resend(apiKey);
+  return apiKey;
 };
 
 const getFromAddress = () => {
@@ -32,28 +30,43 @@ const getFromAddress = () => {
   return from;
 };
 
-const stripHtml = (htmlContent = "") => htmlContent.replace(/<[^>]*>?/gm, "").trim();
+const stripHtml = (htmlContent = "") =>
+  htmlContent.replace(/<[^>]*>?/gm, "").trim();
 
 const sendEmail = async (to, subject, htmlContent, textContent = "") => {
   try {
-    const resend = getResendClient();
+    const apiKey = getResendApiKey();
     const from = getFromAddress();
+    const endpoint = process.env.RESEND_API_URL || "https://api.resend.com/emails";
 
-    const { data, error } = await resend.emails.send({
-      from,
-      to,
-      subject,
-      html: htmlContent,
-      text: textContent || stripHtml(htmlContent),
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from,
+        to: Array.isArray(to) ? to : [to],
+        subject,
+        html: htmlContent,
+        text: textContent || stripHtml(htmlContent),
+      }),
     });
 
-    if (error) {
-      console.error("Error al enviar correo con Resend:", error);
-      throw new Error(error.message || "No se pudo enviar el correo.");
+    const payload = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      const errorMessage = payload?.message || payload?.error || "No se pudo enviar el correo.";
+      console.error("Error al enviar correo con API Resend:", {
+        status: response.status,
+        payload,
+      });
+      throw new Error(errorMessage);
     }
 
-    console.log(`Correo enviado correctamente con Resend. ID: ${data?.id ?? "sin-id"}`);
-    return data;
+    console.log(`Correo enviado correctamente con Resend API. ID: ${payload?.id ?? "sin-id"}`);
+    return payload;
   } catch (error) {
     if (error instanceof EmailServiceConfigError) {
       console.error(error.message);
