@@ -132,16 +132,24 @@ const loginUser = async (req, res) => {
 
 // --- Controlador para obtener datos del usuario logueado ('Me') ---
 const getUserProfile = async (req, res) => {
-  // El middleware 'protect' ya ha verificado el token y adjuntado
-  // el usuario (con grupos populados) a req.user.
-  // Simplemente devolvemos req.user.
-  if (req.user) {
-    res.status(200).json(req.user);
-  } else {
-    // Esto no debería ocurrir si protect está bien, pero por si acaso
-    res.status(404).json({ message: "Usuario no encontrado" });
+  if (!req.user?._id) {
+    return res.status(404).json({ message: "Usuario no encontrado" });
   }
-  // No necesitas buscar en la BD aquí, protect ya lo hizo.
+
+  try {
+    const user = await User.findById(req.user._id)
+      .select("-password")
+      .populate("groups", "_id name");
+
+    if (!user) {
+      return res.status(404).json({ message: "Usuario no encontrado" });
+    }
+
+    res.status(200).json(user);
+  } catch (error) {
+    console.error("Error obteniendo perfil de usuario:", error);
+    res.status(500).json({ message: "Error interno del servidor." });
+  }
 };
 
 // --- NUEVO: Controlador para listar TODOS los usuarios (Admin Only) ---

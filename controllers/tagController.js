@@ -47,6 +47,15 @@ const createTag = async (req, res) => {
 // --- Controlador para Listar Todas las Etiquetas ---
 const listTags = async (req, res) => {
     try {
+        if (req.query.lite === '1') {
+            const tags = await Tag.find({})
+                                 .select('_id name')
+                                 .sort({ name: 1 })
+                                 .lean();
+
+            return res.status(200).json(tags);
+        }
+
         // Buscar todas las etiquetas, ordenadas alfabéticamente
         const tags = await Tag.find({}) // Filtro vacío para traer todas
                              .sort({ name: 1 }) // Ordenar por nombre A-Z

@@ -1,5 +1,5 @@
 // backend/utils/getDriveStorage.js (puedes crear un nuevo archivo para esto)
-import { googleDriveClient } from '../config/googleDriveConfig.js';
+import { activeGoogleDriveClient as googleDriveClient } from '../config/googleDriveConfig.js';
 
 async function getGoogleDriveStorageQuota() {
   try {

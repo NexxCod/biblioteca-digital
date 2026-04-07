@@ -5,11 +5,13 @@ import express from "express";
 import "dotenv/config";
 import cors from "cors";
 import connectDB from "./config/db.js";
+import { googleDriveAuthMode } from "./config/googleDriveConfig.js";
 import userRoutes from "./routes/userRoutes.js";
 import fileRoutes from "./routes/fileRoutes.js";
 import folderRoutes from "./routes/folderRoutes.js";
 import tagRoutes from "./routes/tagRoutes.js";
 import groupRoutes from "./routes/groupRoutes.js";
+import googleAuthRoutes from "./routes/googleAuthRoutes.js";
 
 // --- Conexión a la Base de Datos ---
 console.log("Attempting DB connection..."); // <<< LOG AÑADIDO
@@ -31,6 +33,7 @@ console.log("CORS middleware applied."); // <<< LOG AÑADIDO
 console.log("Setting up JSON/URL-encoded middleware..."); // <<< LOG AÑADIDO
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+console.log(`Google Drive auth mode: ${googleDriveAuthMode}`);
 console.log("JSON/URL-encoded middleware applied."); // <<< LOG AÑADIDO
 
 // --- Rutas ---
@@ -49,6 +52,8 @@ console.log("Applied /api/folders route"); // <<< LOG AÑADIDO
 app.use("/api/tags", tagRoutes);
 console.log("Applied /api/tags route"); // <<< LOG AÑADIDO
 app.use("/api/groups", groupRoutes);
+app.use("/api/google", googleAuthRoutes);
+console.log("Applied /api/google route"); // <<< LOG AÃ‘ADIDO
 console.log("Applied /api/groups route"); // <<< LOG AÑADIDO
 console.log("Route setup complete."); // <<< LOG AÑADIDO
 

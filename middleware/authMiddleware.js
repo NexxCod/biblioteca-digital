@@ -14,12 +14,18 @@ const protect = async (req, res, next) => {
     try {
       token = req.headers.authorization.split(' ')[1];
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      req.user = await User.findById(decoded.id).select('-password').populate('groups', '_id name');;
+      req.user = await User.findById(decoded.id)
+        .select("_id username email role groups isEmailVerified")
+        .lean();
 
       if (!req.user) {
           // Agregamos un return aquí para asegurar que no continúe si el usuario no se encuentra
           return res.status(401).json({ message: 'No autorizado, usuario no encontrado.' });
       }
+
+      req.userGroupIds = (req.user.groups || []).map((groupId) =>
+        groupId.toString()
+      );
 
       next();
 
