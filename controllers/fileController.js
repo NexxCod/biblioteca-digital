@@ -7,6 +7,8 @@ import Group from "../models/Group.js";
 import mongoose from "mongoose";
 import streamifier from "streamifier";
 import path from "path";
+import fs from "fs";
+import { promises as fsPromises } from "fs";
 import { getGoogleDriveStorageQuota } from '../utils/getDriveStorage.js';
 
 // --- Función auxiliar para sanitizar nombres de archivo (Simplificada) ---
@@ -101,6 +103,10 @@ const uploadFile = async (req, res) => {
   try {
     const sanitizedOriginalName = sanitizeFilename(req.file?.originalname || "");
 
+    const uploadStream = req.file.path
+      ? fs.createReadStream(req.file.path)
+      : streamifier.createReadStream(req.file.buffer);
+
     const driveResponse = await googleDriveClient.files.create({
       requestBody: {
         name: sanitizedOriginalName, // Nombre del archivo en Drive
@@ -111,7 +117,7 @@ const uploadFile = async (req, res) => {
       },
       media: {
         mimeType: req.file.mimetype, // Tipo MIME del archivo
-        body: streamifier.createReadStream(req.file.buffer), // Convierte el buffer a stream
+        body: uploadStream,
       },
        // Campos que quieres que te devuelva Google Drive en la respuesta
        // webContentLink o webViewLink son útiles para acceder al archivo
@@ -263,13 +269,17 @@ const uploadFile = async (req, res) => {
             // NUNCA enviar el error.stack o detalles internos sensibles al cliente en producción
             errorRef: "UPLOAD_FAIL" // Un código que puedes buscar en tus logs
         });
-     }
+     } finally {
+      if (req.file?.path) {
+        await fsPromises.unlink(req.file.path).catch(() => {});
+      }
+    }
     };
 
 //  Controlador para Listar Archivos por Carpeta ---
 const getFilesByFolder = async (req, res) => {
   // 1. Extraer TODOS los posibles query parameters
-  const { folderId, fileType, tags, startDate, endDate, search, sortBy, sortOrder } = req.query;
+  const { folderId, fileType, tags, startDate, endDate, search, sortBy, sortOrder, page, limit } = req.query;
   const user = req.user;
 
   // Validación base (folderId sigue siendo requerido por ahora)
@@ -388,16 +398,34 @@ const getFilesByFolder = async (req, res) => {
     // --------------------------------------------------
     
 
-    // 6. Ejecutar la Consulta
-    const files = await File.find(finalFilter)
-    .sort(sortOptions)
+    const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
+    const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+    const skip = (parsedPage - 1) * parsedLimit;
 
-      .populate("uploadedBy", "username email")
-      .populate("tags", "name")
-      .populate("assignedGroup", "name");
+    // 6. Ejecutar la Consulta
+    const [files, total] = await Promise.all([
+      File.find(finalFilter)
+        .select("filename description fileType secureUrl size folder tags uploadedBy assignedGroup createdAt updatedAt")
+        .sort(sortOptions)
+        .skip(skip)
+        .limit(parsedLimit)
+        .populate("uploadedBy", "username email")
+        .populate("tags", "name")
+        .populate("assignedGroup", "name")
+        .lean(),
+      File.countDocuments(finalFilter),
+    ]);
 
     // 7. Enviar Respuesta
-    res.status(200).json(files);
+    res.status(200).json({
+      data: files,
+      pagination: {
+        page: parsedPage,
+        limit: parsedLimit,
+        total,
+        totalPages: Math.ceil(total / parsedLimit),
+      },
+    });
   } catch (error) {
     console.error("Error al obtener archivos por carpeta:", error);
     res

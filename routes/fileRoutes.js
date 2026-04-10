@@ -1,6 +1,7 @@
 // backend/routes/fileRoutes.js
 import express from "express";
 import multer from "multer";
+import path from "path";
 import { protect } from "../middleware/authMiddleware.js"; // Middleware de autenticación
 import {
   uploadFile,
@@ -12,8 +13,14 @@ import {
 } from "../controllers/fileController.js"; // Controlador (lo crearemos a continuación)
 
 // --- Configuración de Multer ---
-// Usamos almacenamiento en memoria (el archivo estará en req.file.buffer)
-const storage = multer.memoryStorage();
+const uploadTmpDir = process.env.UPLOAD_TMP_DIR || "/tmp";
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, uploadTmpDir),
+  filename: (_req, file, cb) => {
+    const safeName = `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname || "")}`;
+    cb(null, safeName);
+  },
+});
 
 // Filtro opcional para tipos de archivo (ejemplo: permitir PDF, Word, JPG, PNG)
 const fileFilter = (req, file, cb) => {
@@ -32,12 +39,40 @@ const fileFilter = (req, file, cb) => {
   );
 };
 
+const maxUploadBytes = Number(
+  process.env.MAX_UPLOAD_BYTES || 1024 * 1024 * 1024
+);
+
 // Inicializamos multer con el almacenamiento y el filtro
 const upload = multer({
   storage: storage,
-  limits: { fileSize: 5000 * 1024 * 1024 }, // Límite de tamaño (ej: 500MB) (5B)
+  limits: { fileSize: maxUploadBytes },
   fileFilter: fileFilter,
 });
+
+const formatMaxSize = (bytes) => `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
+
+const uploadSingleFile = (req, res, next) => {
+  upload.single("file")(req, res, (error) => {
+    if (!error) return next();
+
+    if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({
+        message: `Archivo demasiado grande. Tamaño máximo permitido: ${formatMaxSize(maxUploadBytes)}.`,
+        code: "FILE_TOO_LARGE",
+      });
+    }
+
+    if (error) {
+      return res.status(400).json({
+        message: error.message || "No se pudo procesar el archivo enviado.",
+        code: "UPLOAD_VALIDATION_ERROR",
+      });
+    }
+
+    return next();
+  });
+};
 
 // --- Definición de Rutas ---
 const router = express.Router();
@@ -50,7 +85,7 @@ const router = express.Router();
 //    - Procesa el archivo y lo añade a req.file.
 //    - Procesa otros campos de texto y los añade a req.body.
 // 3. 'uploadFile': Nuestro controlador que maneja la lógica final.
-router.post("/upload", protect, upload.single("file"), uploadFile);
+router.post("/upload", protect, uploadSingleFile, uploadFile);
 
 // Listar archivos por carpeta
 // GET /api/files?folderId=...
@@ -68,6 +103,6 @@ router.put('/:id', protect, updateFile);
 // DELETE /api/files/:id
 router.delete('/:id', protect, deleteFile);
 
-router.get('/drive/storage', handleStorageRequest);
+router.get('/drive/storage', protect, handleStorageRequest);
 
 export default router;
