@@ -1,7 +1,10 @@
 // backend/routes/fileRoutes.js
 import express from "express";
 import multer from "multer";
-import { protect } from "../middleware/authMiddleware.js"; // Middleware de autenticación
+import os from "os";
+import path from "path";
+import fs from "fs";
+import { admin, protect } from "../middleware/authMiddleware.js"; // Middleware de autenticación
 import {
   uploadFile,
   getFilesByFolder,
@@ -12,8 +15,19 @@ import {
 } from "../controllers/fileController.js"; // Controlador (lo crearemos a continuación)
 
 // --- Configuración de Multer ---
-// Usamos almacenamiento en memoria (el archivo estará en req.file.buffer)
-const storage = multer.memoryStorage();
+const uploadTempDir = path.join(os.tmpdir(), "biblioteca-digital-uploads");
+fs.mkdirSync(uploadTempDir, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, uploadTempDir);
+  },
+  filename: (_req, file, cb) => {
+    const extension = path.extname(file.originalname || "");
+    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+    cb(null, `${uniqueSuffix}${extension}`);
+  },
+});
 
 // Filtro opcional para tipos de archivo (ejemplo: permitir PDF, Word, JPG, PNG)
 const fileFilter = (req, file, cb) => {
@@ -35,7 +49,10 @@ const fileFilter = (req, file, cb) => {
 // Inicializamos multer con el almacenamiento y el filtro
 const upload = multer({
   storage: storage,
-  limits: { fileSize: 5000 * 1024 * 1024 }, // Límite de tamaño (ej: 500MB) (5B)
+  limits: {
+    fileSize:
+      (Number(process.env.UPLOAD_MAX_FILE_SIZE_MB || 50) || 50) * 1024 * 1024,
+  },
   fileFilter: fileFilter,
 });
 
@@ -68,6 +85,6 @@ router.put('/:id', protect, updateFile);
 // DELETE /api/files/:id
 router.delete('/:id', protect, deleteFile);
 
-router.get('/drive/storage', handleStorageRequest);
+router.get("/drive/storage", protect, admin, handleStorageRequest);
 
 export default router;

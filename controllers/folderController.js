@@ -5,6 +5,12 @@ import File from '../models/File.js';
 import mongoose from 'mongoose';
 import User from '../models/User.js';
 
+const getUserGroupIds = (req) =>
+    req.userGroupIds ||
+    (req.user?.groups || []).map((group) =>
+        typeof group === 'string' ? group : (group?._id || group)?.toString()
+    );
+
 // --- Controlador para Crear Carpeta ---
 const createFolder = async (req, res) => {
     // 1. Obtener datos del cuerpo de la petición
@@ -99,7 +105,7 @@ const listFolders = async (req, res) => {
             filter = baseFilter;
         } else {
             // Para Becado y Docente, necesitamos los IDs de sus grupos
-            const userGroupIds = user.groups.map(group => group._id); // Extraer IDs de los grupos populados
+            const userGroupIds = getUserGroupIds(req);
 
             let permissionFilter = {};
             if (user.role === 'residente') {
@@ -297,9 +303,7 @@ const getFolderDetails = async (req, res) => {
         const isAdmin = user.role === 'admin';
         const isOwner = folder.createdBy && folder.createdBy._id.toString() === user._id.toString();
 
-        const userGroupIds = user.groups
-            .map(g => g ? g._id.toString() : null) // Mapear a ID string o null si el grupo es null
-            .filter(id => id !== null); // Eliminar entradas null
+        const userGroupIds = getUserGroupIds(req).filter(Boolean);
             
         const isMemberOfGroup = folder.assignedGroup && userGroupIds.includes(folder.assignedGroup._id.toString());
         const isPublic = !folder.assignedGroup;

@@ -1,11 +1,15 @@
 // backend/controllers/fileController.js
-import { googleDriveClient, googleDriveFolderId } from "../config/googleDriveConfig.js";
+import {
+  activeGoogleDriveClient as googleDriveClient,
+  googleDriveFolderId,
+} from "../config/googleDriveConfig.js";
 import File from "../models/File.js";
 import Folder from "../models/Folder.js";
 import Tag from "../models/Tag.js";
 import Group from "../models/Group.js";
 import mongoose from "mongoose";
-import streamifier from "streamifier";
+import fs from "fs";
+import { unlink } from "fs/promises";
 import path from "path";
 import { getGoogleDriveStorageQuota } from '../utils/getDriveStorage.js';
 
@@ -52,8 +56,181 @@ const sanitizeFilename = (filename) => {
 };
 // --- Fin función auxiliar ---
 
+const getUserGroupIds = (req) =>
+  req.userGroupIds ||
+  (req.user?.groups || []).map((group) =>
+    typeof group === "string" ? group : (group?._id || group)?.toString()
+  );
+
+const cleanupUploadedTempFile = async (filePath) => {
+  if (!filePath) {
+    return;
+  }
+
+  try {
+    await unlink(filePath);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      console.error("Error eliminando archivo temporal:", error);
+    }
+  }
+};
+
+const buildFilePermissionFilter = (req) => {
+  const user = req.user;
+
+  if (!user) {
+    return null;
+  }
+
+  if (user.role === "admin") {
+    return {};
+  }
+
+  const userGroupIds = getUserGroupIds(req).filter(Boolean);
+
+  if (user.role === "residente") {
+    return {
+      $or: [{ assignedGroup: null }, { assignedGroup: { $in: userGroupIds } }],
+    };
+  }
+
+  if (user.role === "docente") {
+    return {
+      $or: [{ uploadedBy: user._id }, { assignedGroup: { $in: userGroupIds } }],
+    };
+  }
+
+  return null;
+};
+
+const buildFileCriteriaFilter = ({
+  folderId = null,
+  fileType,
+  tags,
+  startDate,
+  endDate,
+  search,
+}) => {
+  const criteriaFilter = {};
+
+  if (folderId) {
+    criteriaFilter.folder = folderId;
+  }
+
+  if (fileType) {
+    const validTypes = File.schema.path("fileType").enumValues;
+    if (validTypes.includes(fileType)) {
+      criteriaFilter.fileType = fileType;
+    } else {
+      console.warn(`Tipo de archivo inválido solicitado: ${fileType}`);
+    }
+  }
+
+  if (tags) {
+    const tagIdArray = tags
+      .split(",")
+      .map((id) => id.trim())
+      .filter((id) => mongoose.Types.ObjectId.isValid(id));
+
+    if (tagIdArray.length > 0) {
+      criteriaFilter.tags = { $in: tagIdArray };
+    }
+  }
+
+  const dateFilter = {};
+  if (startDate) {
+    const date = new Date(startDate);
+    if (!isNaN(date)) {
+      date.setUTCHours(0, 0, 0, 0);
+      dateFilter.$gte = date;
+    }
+  }
+  if (endDate) {
+    const date = new Date(endDate);
+    if (!isNaN(date)) {
+      date.setUTCHours(23, 59, 59, 999);
+      dateFilter.$lte = date;
+    }
+  }
+  if (Object.keys(dateFilter).length > 0) {
+    criteriaFilter.createdAt = dateFilter;
+  }
+
+  if (search) {
+    const searchRegex = new RegExp(search.trim(), "i");
+    criteriaFilter.$or = [{ filename: searchRegex }, { description: searchRegex }];
+  }
+
+  return criteriaFilter;
+};
+
+const respondWithFileList = async ({
+  res,
+  criteriaFilter,
+  permissionFilter,
+  isAdmin,
+  sortBy,
+  sortOrder,
+  page,
+  limit,
+}) => {
+  const finalFilter = isAdmin ? criteriaFilter : { $and: [criteriaFilter, permissionFilter] };
+
+  const sortOptions = {};
+  const validSortBy = ["createdAt", "filename"];
+  const validSortOrder = ["asc", "desc"];
+  const sBy = validSortBy.includes(sortBy) ? sortBy : "createdAt";
+  const sOrder = validSortOrder.includes(sortOrder) ? sortOrder : "desc";
+  sortOptions[sBy] = sOrder === "asc" ? 1 : -1;
+
+  const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
+  const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 24, 1), 100);
+  const skip = (parsedPage - 1) * parsedLimit;
+  const usePagination = Boolean(page || limit);
+
+  const query = File.find(finalFilter)
+    .sort(sortOptions)
+    .select(
+      "filename description fileType driveFileId secureUrl size folder tags uploadedBy assignedGroup createdAt updatedAt"
+    )
+    .populate("folder", "name")
+    .populate("uploadedBy", "username email")
+    .populate("tags", "name")
+    .populate("assignedGroup", "name")
+    .lean();
+
+  if (usePagination) {
+    query.skip(skip).limit(parsedLimit);
+  }
+
+  const [files, totalItems] = await Promise.all([
+    query,
+    usePagination ? File.countDocuments(finalFilter) : Promise.resolve(null),
+  ]);
+
+  if (!usePagination) {
+    return res.status(200).json(files);
+  }
+
+  const totalPages = Math.max(Math.ceil(totalItems / parsedLimit), 1);
+
+  return res.status(200).json({
+    items: files,
+    pagination: {
+      page: parsedPage,
+      limit: parsedLimit,
+      totalItems,
+      totalPages,
+      hasNextPage: parsedPage < totalPages,
+      hasPrevPage: parsedPage > 1,
+    },
+  });
+};
+
 // --- Controlador para Subir Archivo ---
 const uploadFile = async (req, res) => {
+  const tempFilePath = req.file?.path;
  
   // 1. Verificar que Multer procesó un archivo
   if (!req.file) {
@@ -68,6 +245,7 @@ const uploadFile = async (req, res) => {
 
   // Validación simple (necesitas una carpeta donde guardar!)
   if (!folderId) {
+    await cleanupUploadedTempFile(tempFilePath);
     return res
       .status(400)
       .json({ message: "Se requiere especificar la carpeta (folderId)." });
@@ -78,6 +256,7 @@ const uploadFile = async (req, res) => {
   let validatedGroupId = null;
   if (assignedGroupId) {
     if (!mongoose.Types.ObjectId.isValid(assignedGroupId)) {
+      await cleanupUploadedTempFile(tempFilePath);
       return res
         .status(400)
         .json({ message: "El assignedGroupId proporcionado no es válido." });
@@ -85,6 +264,7 @@ const uploadFile = async (req, res) => {
     try {
       const groupExists = await Group.findById(assignedGroupId);
       if (!groupExists) {
+        await cleanupUploadedTempFile(tempFilePath);
         return res
           .status(404)
           .json({ message: "El grupo asignado no existe." });
@@ -92,6 +272,7 @@ const uploadFile = async (req, res) => {
       validatedGroupId = assignedGroupId;
     } catch (error) {
       console.error("Error buscando grupo asignado:", error);
+      await cleanupUploadedTempFile(tempFilePath);
       return res
         .status(500)
         .json({ message: "Error al verificar el grupo asignado." });
@@ -100,6 +281,7 @@ const uploadFile = async (req, res) => {
 
   try {
     const sanitizedOriginalName = sanitizeFilename(req.file?.originalname || "");
+    const uploadStream = fs.createReadStream(tempFilePath);
 
     const driveResponse = await googleDriveClient.files.create({
       requestBody: {
@@ -111,7 +293,7 @@ const uploadFile = async (req, res) => {
       },
       media: {
         mimeType: req.file.mimetype, // Tipo MIME del archivo
-        body: streamifier.createReadStream(req.file.buffer), // Convierte el buffer a stream
+        body: uploadStream,
       },
        // Campos que quieres que te devuelva Google Drive en la respuesta
        // webContentLink o webViewLink son útiles para acceder al archivo
@@ -263,14 +445,67 @@ const uploadFile = async (req, res) => {
             // NUNCA enviar el error.stack o detalles internos sensibles al cliente en producción
             errorRef: "UPLOAD_FAIL" // Un código que puedes buscar en tus logs
         });
+     } finally {
+      await cleanupUploadedTempFile(tempFilePath);
      }
     };
 
 //  Controlador para Listar Archivos por Carpeta ---
 const getFilesByFolder = async (req, res) => {
   // 1. Extraer TODOS los posibles query parameters
-  const { folderId, fileType, tags, startDate, endDate, search, sortBy, sortOrder } = req.query;
+  const {
+    folderId,
+    fileType,
+    tags,
+    startDate,
+    endDate,
+    search,
+    sortBy,
+    sortOrder,
+    page,
+    limit,
+  } = req.query;
   const user = req.user;
+  const normalizedFolderId =
+    typeof folderId === "string" && folderId.trim() ? folderId.trim() : null;
+
+  if (!user) {
+    return res.status(401).json({ message: "Usuario no autenticado." });
+  }
+
+  if (!normalizedFolderId) {
+    try {
+      const permissionFilter = buildFilePermissionFilter(req);
+
+      if (permissionFilter === null) {
+        return res.status(403).json({ message: "Rol no autorizado." });
+      }
+
+      const criteriaFilter = buildFileCriteriaFilter({
+        fileType,
+        tags,
+        startDate,
+        endDate,
+        search,
+      });
+
+      return await respondWithFileList({
+        res,
+        criteriaFilter,
+        permissionFilter,
+        isAdmin: user.role === "admin",
+        sortBy,
+        sortOrder,
+        page,
+        limit,
+      });
+    } catch (error) {
+      console.error("Error al obtener archivos globales:", error);
+      return res
+        .status(500)
+        .json({ message: "Error interno del servidor al obtener archivos." });
+    }
+  }
 
   // Validación base (folderId sigue siendo requerido por ahora)
   if (!folderId || !mongoose.Types.ObjectId.isValid(folderId)) {
@@ -285,7 +520,7 @@ const getFilesByFolder = async (req, res) => {
     let permissionFilter = {};
     const isAdmin = user.role === "admin";
     if (!isAdmin) {
-      const userGroupIds = user.groups.map((group) => group._id);
+      const userGroupIds = getUserGroupIds(req);
       if (user.role === "residente") {
         permissionFilter = {
           $or: [
@@ -386,18 +621,52 @@ const getFilesByFolder = async (req, res) => {
 
     sortOptions[sBy] = sOrder === 'asc' ? 1 : -1; // 1 para ascendente, -1 para descendente
     // --------------------------------------------------
-    
 
-    // 6. Ejecutar la Consulta
-    const files = await File.find(finalFilter)
-    .sort(sortOptions)
+    const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
+    const parsedLimit = Math.min(
+      Math.max(parseInt(limit, 10) || 24, 1),
+      100
+    );
+    const skip = (parsedPage - 1) * parsedLimit;
+    const usePagination = Boolean(page || limit);
 
+    const query = File.find(finalFilter)
+      .sort(sortOptions)
+      .select(
+        "filename description fileType driveFileId secureUrl size folder tags uploadedBy assignedGroup createdAt updatedAt"
+      )
+      .populate("folder", "name")
       .populate("uploadedBy", "username email")
       .populate("tags", "name")
-      .populate("assignedGroup", "name");
+      .populate("assignedGroup", "name")
+      .lean();
 
-    // 7. Enviar Respuesta
-    res.status(200).json(files);
+    if (usePagination) {
+      query.skip(skip).limit(parsedLimit);
+    }
+
+    const [files, totalItems] = await Promise.all([
+      query,
+      usePagination ? File.countDocuments(finalFilter) : Promise.resolve(null),
+    ]);
+
+    if (!usePagination) {
+      return res.status(200).json(files);
+    }
+
+    const totalPages = Math.max(Math.ceil(totalItems / parsedLimit), 1);
+
+    res.status(200).json({
+      items: files,
+      pagination: {
+        page: parsedPage,
+        limit: parsedLimit,
+        totalItems,
+        totalPages,
+        hasNextPage: parsedPage < totalPages,
+        hasPrevPage: parsedPage > 1,
+      },
+    });
   } catch (error) {
     console.error("Error al obtener archivos por carpeta:", error);
     res
