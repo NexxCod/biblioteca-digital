@@ -56,6 +56,35 @@ const upload = multer({
   fileFilter: fileFilter,
 });
 
+const uploadSingleFile = (req, res, next) => {
+  upload.single("file")(req, res, (error) => {
+    if (!error) {
+      return next();
+    }
+
+    if (error instanceof multer.MulterError) {
+      if (error.code === "LIMIT_FILE_SIZE") {
+        const maxSizeMb = Number(process.env.UPLOAD_MAX_FILE_SIZE_MB || 50) || 50;
+        return res.status(413).json({
+          message: `El archivo supera el límite permitido de ${maxSizeMb} MB.`,
+          code: "FILE_TOO_LARGE",
+          maxSizeMb,
+        });
+      }
+
+      return res.status(400).json({
+        message: "Error al procesar la subida del archivo.",
+        code: error.code || "UPLOAD_ERROR",
+      });
+    }
+
+    return res.status(400).json({
+      message: error.message || "No se pudo procesar el archivo.",
+      code: "UPLOAD_REJECTED",
+    });
+  });
+};
+
 // --- Definición de Rutas ---
 const router = express.Router();
 
@@ -67,7 +96,7 @@ const router = express.Router();
 //    - Procesa el archivo y lo añade a req.file.
 //    - Procesa otros campos de texto y los añade a req.body.
 // 3. 'uploadFile': Nuestro controlador que maneja la lógica final.
-router.post("/upload", protect, upload.single("file"), uploadFile);
+router.post("/upload", protect, uploadSingleFile, uploadFile);
 
 // Listar archivos por carpeta
 // GET /api/files?folderId=...

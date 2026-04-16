@@ -76,6 +76,11 @@ const cleanupUploadedTempFile = async (filePath) => {
   }
 };
 
+const isGoogleInvalidGrantError = (error) =>
+  error?.response?.status === 400 &&
+  error?.response?.data?.error === "invalid_grant" &&
+  error?.config?.url?.includes("oauth2.googleapis.com/token");
+
 const buildFilePermissionFilter = (req) => {
   const user = req.user;
 
@@ -438,8 +443,16 @@ const uploadFile = async (req, res) => {
         console.error("Objeto de Error Completo (stringify):", JSON.stringify(error, null, 2));
       console.error('------------------------------------------------------');
     
-        // Enviar respuesta de error genérica al cliente
-      res.status(500).json({ // Usar 500 como default, o error.code si es un error de API HTTP
+      if (isGoogleInvalidGrantError(error)) {
+        return res.status(502).json({
+          message:
+            "No se pudo conectar con Google Drive porque la autorización expiró o fue revocada. Reautoriza la integración.",
+          code: "GOOGLE_DRIVE_AUTH_INVALID_GRANT",
+        });
+      }
+
+      // Enviar respuesta de error genérica al cliente
+      return res.status(500).json({ // Usar 500 como default, o error.code si es un error de API HTTP
             message: "Error interno del servidor al procesar el archivo.",
             // Opcional: Enviar detalles MUY limitados o un código de error para rastreo
             // NUNCA enviar el error.stack o detalles internos sensibles al cliente en producción
