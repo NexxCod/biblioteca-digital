@@ -31,8 +31,16 @@ const protect = async (req, res, next) => {
 
     } catch (error) {
       console.error('Error de autenticación:', error);
+      if (error?.name === 'TokenExpiredError') {
+        return res.status(401).json({
+          message: 'Sesión expirada. Inicia sesión nuevamente.',
+          code: 'TOKEN_EXPIRED',
+          expiredAt: error.expiredAt,
+        });
+      }
+
       // Añadimos return aquí también
-      return res.status(401).json({ message: 'No autorizado, token inválido.' });
+      return res.status(401).json({ message: 'No autorizado, token inválido.', code: 'TOKEN_INVALID' });
     }
   }
 
