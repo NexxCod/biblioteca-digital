@@ -10,6 +10,23 @@ import GoogleDriveCredential from "../models/GoogleDriveCredential.js";
 
 const STATE_TTL_SECONDS = 5 * 60;
 
+const resolveAllowedOpenerOrigin = () => {
+  const raw = process.env.FRONTEND_URL?.trim();
+  if (!raw) {
+    return null;
+  }
+  try {
+    return new URL(raw).origin;
+  } catch (_) {
+    console.warn(
+      `FRONTEND_URL no es una URL válida (${raw}); el postMessage del callback no podrá restringir destinatario.`
+    );
+    return null;
+  }
+};
+
+const ALLOWED_OPENER_ORIGIN = resolveAllowedOpenerOrigin();
+
 const escapeHtml = (value) =>
   String(value || "")
     .replace(/&/g, "&amp;")
@@ -94,9 +111,10 @@ const buildPopupResponseHtml = ({ status, message, payload }) => {
     <script>
       (function () {
         var data = { source: "google-drive-oauth", status: ${JSON.stringify(safeStatus)}, payload: ${safePayload} };
+        var targetOrigin = ${JSON.stringify(ALLOWED_OPENER_ORIGIN || "")};
         try {
-          if (window.opener && !window.opener.closed) {
-            window.opener.postMessage(data, "*");
+          if (window.opener && !window.opener.closed && targetOrigin) {
+            window.opener.postMessage(data, targetOrigin);
           }
         } catch (e) {}
         setTimeout(function () { try { window.close(); } catch (e) {} }, 1500);
