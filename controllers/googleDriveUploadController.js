@@ -1,5 +1,6 @@
 import path from "path";
 import mongoose from "mongoose";
+import jwt from "jsonwebtoken";
 import {
   getActiveGoogleDriveClient,
   getGoogleDriveAccessToken,
@@ -9,6 +10,10 @@ import File from "../models/File.js";
 import Folder from "../models/Folder.js";
 import Tag from "../models/Tag.js";
 import Group from "../models/Group.js";
+import { userCanWriteFolder } from "../utils/folderPermissions.js";
+
+const UPLOAD_TOKEN_TTL_SECONDS = 60 * 60; // 1h
+const UPLOAD_TOKEN_PURPOSE = "drive-upload";
 
 const sanitizeFilename = (filename) => {
   const invalidCharsRegex = /[/\\?%*:|"<>]/g;
@@ -110,6 +115,55 @@ const resolveTagIds = async (tags, userId) => {
   );
 };
 
+const signUploadToken = ({ userId, folderId, assignedGroupId }) =>
+  jwt.sign(
+    {
+      purpose: UPLOAD_TOKEN_PURPOSE,
+      userId: String(userId),
+      folderId: String(folderId),
+      assignedGroupId: assignedGroupId ? String(assignedGroupId) : null,
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: UPLOAD_TOKEN_TTL_SECONDS }
+  );
+
+const verifyUploadToken = (token, userId) => {
+  if (!token || typeof token !== "string") {
+    const error = new Error(
+      "Falta el token de subida. Inicia una nueva sesión de subida."
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+
+  let payload;
+  try {
+    payload = jwt.verify(token, process.env.JWT_SECRET);
+  } catch (verifyError) {
+    const error = new Error(
+      verifyError?.name === "TokenExpiredError"
+        ? "La sesión de subida expiró. Inicia una nueva."
+        : "El token de subida es inválido."
+    );
+    error.statusCode = 401;
+    throw error;
+  }
+
+  if (payload?.purpose !== UPLOAD_TOKEN_PURPOSE) {
+    const error = new Error("El token de subida no es válido para esta acción.");
+    error.statusCode = 401;
+    throw error;
+  }
+
+  if (payload.userId !== String(userId)) {
+    const error = new Error("El token de subida pertenece a otro usuario.");
+    error.statusCode = 403;
+    throw error;
+  }
+
+  return payload;
+};
+
 const createDriveUploadSession = async (req, res) => {
   const { filename, mimeType, size, description, folderId, assignedGroupId } =
     req.body;
@@ -121,8 +175,15 @@ const createDriveUploadSession = async (req, res) => {
       });
     }
 
-    await resolveFolder(folderId);
-    await resolveAssignedGroup(assignedGroupId);
+    const folder = await resolveFolder(folderId);
+
+    if (!userCanWriteFolder(req, folder)) {
+      return res.status(403).json({
+        message: "No tienes permiso para subir contenido a esta carpeta.",
+      });
+    }
+
+    const validatedGroupId = await resolveAssignedGroup(assignedGroupId);
 
     const accessToken = await getGoogleDriveAccessToken();
 
@@ -170,9 +231,17 @@ const createDriveUploadSession = async (req, res) => {
       });
     }
 
+    const uploadToken = signUploadToken({
+      userId: req.user._id,
+      folderId,
+      assignedGroupId: validatedGroupId,
+    });
+
     res.status(200).json({
       uploadUrl,
       driveMetadata,
+      uploadToken,
+      uploadTokenExpiresInSeconds: UPLOAD_TOKEN_TTL_SECONDS,
     });
   } catch (error) {
     console.error("Error iniciando sesión de subida a Drive:", error);
@@ -183,24 +252,57 @@ const createDriveUploadSession = async (req, res) => {
 };
 
 const finalizeDriveUpload = async (req, res) => {
-  const { driveFile, folderId, tags, assignedGroupId, description } = req.body;
+  const { driveFile, tags, description, uploadToken } = req.body;
 
   try {
-    await resolveFolder(folderId);
-    const validatedGroupId = await resolveAssignedGroup(assignedGroupId);
+    const tokenPayload = verifyUploadToken(uploadToken, req.user._id);
 
-    if (!driveFile?.id) {
+    // El folder y assignedGroup vienen del token firmado, NO del body, para
+    // que el cliente no pueda registrar el archivo en otra carpeta o grupo.
+    const folderId = tokenPayload.folderId;
+    const validatedGroupId = tokenPayload.assignedGroupId || null;
+
+    if (!driveFile?.id || typeof driveFile.id !== "string") {
       return res.status(400).json({
         message: "No se recibió metadata válida del archivo subido a Drive.",
       });
     }
 
-    let sharedLink = driveFile.webContentLink || driveFile.webViewLink || null;
+    // Verificar contra Drive que el archivo realmente existe en NUESTRA
+    // carpeta de aplicación (no es el archivo de otra cuenta).
+    const driveClient = await getActiveGoogleDriveClient();
+    let remoteFile;
+    try {
+      const remoteResponse = await driveClient.files.get({
+        fileId: driveFile.id,
+        fields:
+          "id,name,parents,webContentLink,webViewLink,size,mimeType,description",
+      });
+      remoteFile = remoteResponse.data;
+    } catch (driveError) {
+      console.error("Error consultando archivo en Drive:", driveError);
+      return res.status(404).json({
+        message:
+          "No se encontró el archivo en Drive con el id indicado, o el servidor no tiene acceso.",
+      });
+    }
+
+    if (
+      !Array.isArray(remoteFile.parents) ||
+      !remoteFile.parents.includes(googleDriveFolderId)
+    ) {
+      return res.status(400).json({
+        message:
+          "El archivo no pertenece a la carpeta de Drive de la aplicación.",
+      });
+    }
+
+    let sharedLink =
+      remoteFile.webContentLink || remoteFile.webViewLink || null;
 
     try {
-      const driveClient = await getActiveGoogleDriveClient();
       await driveClient.permissions.create({
-        fileId: driveFile.id,
+        fileId: remoteFile.id,
         requestBody: {
           role: "reader",
           type: "anyone",
@@ -209,7 +311,7 @@ const finalizeDriveUpload = async (req, res) => {
       });
 
       const refreshedFile = await driveClient.files.get({
-        fileId: driveFile.id,
+        fileId: remoteFile.id,
         fields:
           "id,name,webContentLink,webViewLink,size,mimeType,description",
       });
@@ -224,15 +326,15 @@ const finalizeDriveUpload = async (req, res) => {
 
     const tagIds = await resolveTagIds(tags, req.user._id);
     const persistedDescription =
-      driveFile.description || description || "";
+      remoteFile.description || description || "";
 
     const newFile = await File.create({
-      filename: driveFile.name,
+      filename: remoteFile.name,
       description: persistedDescription,
-      fileType: detectFileType(driveFile.name),
-      driveFileId: driveFile.id,
+      fileType: detectFileType(remoteFile.name),
+      driveFileId: remoteFile.id,
       secureUrl: sharedLink,
-      size: Number(driveFile.size || 0),
+      size: Number(remoteFile.size || 0),
       folder: folderId,
       tags: tagIds,
       uploadedBy: req.user._id,
