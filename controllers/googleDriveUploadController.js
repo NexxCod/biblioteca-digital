@@ -1,7 +1,7 @@
 import path from "path";
 import mongoose from "mongoose";
 import {
-  activeGoogleDriveClient as googleDriveClient,
+  getActiveGoogleDriveClient,
   getGoogleDriveAccessToken,
   googleDriveFolderId,
 } from "../config/googleDriveConfig.js";
@@ -198,7 +198,8 @@ const finalizeDriveUpload = async (req, res) => {
     let sharedLink = driveFile.webContentLink || driveFile.webViewLink || null;
 
     try {
-      await googleDriveClient.permissions.create({
+      const driveClient = await getActiveGoogleDriveClient();
+      await driveClient.permissions.create({
         fileId: driveFile.id,
         requestBody: {
           role: "reader",
@@ -207,7 +208,7 @@ const finalizeDriveUpload = async (req, res) => {
         fields: "id, role, type",
       });
 
-      const refreshedFile = await googleDriveClient.files.get({
+      const refreshedFile = await driveClient.files.get({
         fileId: driveFile.id,
         fields:
           "id,name,webContentLink,webViewLink,size,mimeType,description",
