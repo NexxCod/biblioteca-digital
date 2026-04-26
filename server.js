@@ -2,7 +2,7 @@ import express from "express";
 import "dotenv/config";
 import cors from "cors";
 import connectDB from "./config/db.js";
-import { googleDriveAuthMode } from "./config/googleDriveConfig.js";
+import { describeGoogleDriveAuthAvailability } from "./config/googleDriveConfig.js";
 import userRoutes from "./routes/userRoutes.js";
 import fileRoutes from "./routes/fileRoutes.js";
 import folderRoutes from "./routes/folderRoutes.js";
@@ -70,8 +70,11 @@ app.use("/api/google", googleAuthRoutes);
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, "0.0.0.0", () => {
+  const driveAuth = describeGoogleDriveAuthAvailability();
   console.log(`Servidor corriendo en el puerto ${PORT}`);
-  console.log(`Google Drive auth mode: ${googleDriveAuthMode}`);
+  console.log(
+    `Google Drive: OAuth app=${driveAuth.hasOAuthAppCredentials}, service account=${driveAuth.hasServiceAccountCredentials}`
+  );
   console.log(
     `CORS allowed origins: ${allowedOrigins.length ? allowedOrigins.join(", ") : "none"}`
   );

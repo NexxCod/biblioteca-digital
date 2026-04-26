@@ -1,6 +1,6 @@
 // backend/controllers/fileController.js
 import {
-  activeGoogleDriveClient as googleDriveClient,
+  getActiveGoogleDriveClient,
   googleDriveFolderId,
 } from "../config/googleDriveConfig.js";
 import File from "../models/File.js";
@@ -287,6 +287,8 @@ const uploadFile = async (req, res) => {
   try {
     const sanitizedOriginalName = sanitizeFilename(req.file?.originalname || "");
     const uploadStream = fs.createReadStream(tempFilePath);
+
+    const googleDriveClient = await getActiveGoogleDriveClient();
 
     const driveResponse = await googleDriveClient.files.create({
       requestBody: {
@@ -954,6 +956,7 @@ const deleteFile = async (req, res) => {
     // Asegúrate de que tu modelo File ahora tenga driveFileId para archivos subidos
     if (file.fileType !== "video_link" && file.fileType !== "generic_link" && file.driveFileId) {
       try {
+        const googleDriveClient = await getActiveGoogleDriveClient();
          // Intentamos borrar de Google Drive usando el driveFileId
         await googleDriveClient.files.delete({
             fileId: file.driveFileId, // Usa el ID de Google Drive
