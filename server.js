@@ -14,6 +14,12 @@ connectDB();
 
 const app = express();
 
+// Railway (y la mayoría de PaaS) sirve detrás de un proxy. Sin esto,
+// express-rate-limit y req.ip ven la IP interna del balanceador en
+// vez de la del cliente. "1" = confiar en el primer hop solamente
+// para evitar spoofing del header X-Forwarded-For.
+app.set("trust proxy", 1);
+
 const parseAllowedOrigins = () => {
   const configuredOrigins = (process.env.CORS_ALLOWED_ORIGINS || "")
     .split(",")

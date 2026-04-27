@@ -12,6 +12,7 @@ import fs from "fs";
 import { unlink } from "fs/promises";
 import path from "path";
 import { getGoogleDriveStorageQuota } from '../utils/getDriveStorage.js';
+import { userCanWriteFolder } from '../utils/folderPermissions.js';
 
 // --- Función auxiliar para sanitizar nombres de archivo (Simplificada) ---
 const sanitizeFilename = (filename) => {
@@ -80,6 +81,11 @@ const isGoogleInvalidGrantError = (error) =>
   error?.response?.status === 400 &&
   error?.response?.data?.error === "invalid_grant" &&
   error?.config?.url?.includes("oauth2.googleapis.com/token");
+
+// Escapa los metacaracteres de regex para que la búsqueda del usuario
+// se trate como texto literal (evita ReDoS y matches accidentales).
+const escapeRegex = (value) =>
+  String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const buildFilePermissionFilter = (req) => {
   const user = req.user;
@@ -163,7 +169,7 @@ const buildFileCriteriaFilter = ({
   }
 
   if (search) {
-    const searchRegex = new RegExp(search.trim(), "i");
+    const searchRegex = new RegExp(escapeRegex(search.trim()), "i");
     criteriaFilter.$or = [{ filename: searchRegex }, { description: searchRegex }];
   }
 
@@ -249,13 +255,27 @@ const uploadFile = async (req, res) => {
   const { description, folderId, tags, assignedGroupId } = req.body; // Asumimos que se envían folderId y tags (como string separado por comas, por ejemplo)
 
   // Validación simple (necesitas una carpeta donde guardar!)
-  if (!folderId) {
+  if (!folderId || !mongoose.Types.ObjectId.isValid(folderId)) {
     await cleanupUploadedTempFile(tempFilePath);
     return res
       .status(400)
       .json({ message: "Se requiere especificar la carpeta (folderId)." });
   }
-  // Aquí deberías validar que la carpeta (folderId) existe y pertenece al usuario si es necesario.
+
+  // Verificar que la carpeta existe y que el usuario tiene permiso para escribir en ella.
+  const targetFolder = await Folder.findById(folderId).lean();
+  if (!targetFolder) {
+    await cleanupUploadedTempFile(tempFilePath);
+    return res
+      .status(404)
+      .json({ message: "La carpeta especificada no existe." });
+  }
+  if (!userCanWriteFolder(req, targetFolder)) {
+    await cleanupUploadedTempFile(tempFilePath);
+    return res
+      .status(403)
+      .json({ message: "No tienes permiso para subir contenido a esta carpeta." });
+  }
 
   // Validación de assignedGroupId (NUEVO) - Igual que en createFolder
   let validatedGroupId = null;
@@ -608,7 +628,7 @@ const getFilesByFolder = async (req, res) => {
 
     // Añadir filtro de búsqueda por texto (case-insensitive en filename y description)
     if (search) {
-      const searchRegex = new RegExp(search.trim(), "i"); // 'i' para case-insensitive
+      const searchRegex = new RegExp(escapeRegex(search.trim()), "i"); // 'i' para case-insensitive
       criteriaFilter.$or = [
         { filename: searchRegex },
         { description: searchRegex },
@@ -732,21 +752,27 @@ const addLink = async (req, res) => {
     }
   }
 
-  // Opcional: Validar que la carpeta (folderId) existe
+  // Validar carpeta existe y permisos de escritura del usuario
+  if (!mongoose.Types.ObjectId.isValid(folderId)) {
+    return res.status(400).json({ message: "FolderId inválido." });
+  }
   try {
-    const folderExists = await Folder.findById(folderId);
+    const folderExists = await Folder.findById(folderId).lean();
     if (!folderExists) {
       return res
         .status(404)
         .json({ message: "La carpeta especificada no existe." });
     }
-    // Podrías añadir validación de permiso para esta carpeta aquí también
+    if (!userCanWriteFolder(req, folderExists)) {
+      return res
+        .status(403)
+        .json({ message: "No tienes permiso para añadir enlaces a esta carpeta." });
+    }
   } catch (error) {
-    // Manejo si el folderId no es un ObjectId válido o hay error de DB
     console.error("Error buscando carpeta:", error);
     return res
-      .status(400)
-      .json({ message: "FolderId inválido o error al buscar carpeta." });
+      .status(500)
+      .json({ message: "Error al buscar la carpeta." });
   }
 
   
@@ -840,18 +866,23 @@ const updateFile = async (req, res) => {
 
     // 3. Validar y Procesar Campos a Actualizar
 
-    // Validar folderId si se proporciona
+    // Validar folderId si se proporciona (mover a otra carpeta)
     if (folderId) {
       if (!mongoose.Types.ObjectId.isValid(folderId))
         return res
           .status(400)
           .json({ message: "El folderId proporcionado no es válido." });
-      const folderExists = await Folder.findById(folderId);
+      const folderExists = await Folder.findById(folderId).lean();
       if (!folderExists)
         return res
           .status(404)
           .json({ message: "La nueva carpeta especificada no existe." });
-      file.folder = folderId; // Actualizar carpeta
+      if (!userCanWriteFolder(req, folderExists)) {
+        return res
+          .status(403)
+          .json({ message: "No tienes permiso para mover el archivo a esa carpeta." });
+      }
+      file.folder = folderId;
     }
 
     // Validar assignedGroupId si se proporciona

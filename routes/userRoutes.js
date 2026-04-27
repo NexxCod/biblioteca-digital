@@ -2,6 +2,12 @@
 import express from 'express';
 import { protect, admin } from '../middleware/authMiddleware.js';
 import {
+    loginLimiter,
+    registerLimiter,
+    passwordResetLimiter,
+    verifyEmailLimiter,
+} from '../middleware/rateLimiters.js';
+import {
     registerUser,
     loginUser,
     getUserProfile,
@@ -19,19 +25,19 @@ import {
 const router = express.Router();
 
 // Ruta para registrar un nuevo usuario
-router.post('/register', registerUser);
+router.post('/register', registerLimiter, registerUser);
 
 // Ruta para iniciar sesión
-router.post('/login', loginUser);
+router.post('/login', loginLimiter, loginUser);
 
 // NUEVA RUTA para obtener datos del usuario logueado
 router.get('/me', protect, getUserProfile);
 
-router.get('/verify-email/:token', verifyEmail); // Para verificar el email
-router.post('/forgot-password', forgotPassword);    // Para solicitar restablecimiento
-router.post('/reset-password/:token', resetPassword); // Para restablecer con el token
-router.put('/change-password', protect, changePassword); // Para cambiar contraseña (logueado)
-router.post('/resend-verification', resendVerificationEmail); // Para reenviar email de verificación
+router.get('/verify-email/:token', verifyEmailLimiter, verifyEmail);
+router.post('/forgot-password', passwordResetLimiter, forgotPassword);
+router.post('/reset-password/:token', passwordResetLimiter, resetPassword);
+router.put('/change-password', protect, changePassword);
+router.post('/resend-verification', verifyEmailLimiter, resendVerificationEmail);
 
 // Ruta para listar todos los usuarios
 // GET /api/users/

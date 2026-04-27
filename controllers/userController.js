@@ -30,19 +30,29 @@ const isEmailServiceConfigError = (error) =>
   error instanceof EmailServiceConfigError ||
   error?.name === "EmailServiceConfigError";
 
+// Defensa contra NoSQL injection: si el cliente manda objetos en lugar
+// de strings (p.ej. {"$ne": null}), Mongoose puede llegar a interpretarlos
+// como operadores. Bloqueamos todo lo que no sea string puro y no vacío.
+const requireStringFields = (req, res, fields) => {
+  const body = req.body || {};
+  for (const field of fields) {
+    const value = body[field];
+    if (typeof value !== "string" || value.trim() === "") {
+      res.status(400).json({
+        message: `El campo "${field}" es obligatorio y debe ser texto.`,
+      });
+      return false;
+    }
+  }
+  return true;
+};
+
 // --- Controlador para Registrar Usuario ---
 const registerUser = async (req, res) => {
-  // 1. Obtener datos del cuerpo de la petición
-  const { username, email, password } = req.body;
-
-  // 2. Validación básica
-  if (!username || !email || !password) {
-    return res
-      .status(400)
-      .json({
-        message: "Por favor, incluye nombre de usuario, email y contraseña.",
-      });
+  if (!requireStringFields(req, res, ["username", "email", "password"])) {
+    return;
   }
+  const { username, email, password } = req.body;
 
   try {
     // 3. Verificar si el usuario ya existe (por email o username)
@@ -88,10 +98,10 @@ const registerUser = async (req, res) => {
 
 // --- Controlador para Iniciar Sesión ---
 const loginUser = async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ message: 'Por favor, incluye email y contraseña.' });
+  if (!requireStringFields(req, res, ["email", "password"])) {
+    return;
   }
+  const { email, password } = req.body;
 
   try {
     const user = await User.findOne({ email }).select('+password').populate('groups', '_id name');
@@ -472,10 +482,10 @@ const verifyEmail = async (req, res) => {
 
 // --- NUEVO: Controlador para Solicitar Restablecimiento de Contraseña ---
 const forgotPassword = async (req, res) => {
-  const { email } = req.body;
-  if (!email) {
-    return res.status(400).json({ message: 'Por favor, proporciona tu correo electrónico.' });
+  if (!requireStringFields(req, res, ["email"])) {
+    return;
   }
+  const { email } = req.body;
 
   try {
     const user = await User.findOne({ email });
@@ -515,14 +525,13 @@ const forgotPassword = async (req, res) => {
 // --- NUEVO: Controlador para Restablecer Contraseña ---
 const resetPassword = async (req, res) => {
   const { token } = req.params;
-  const { password, confirmPassword } = req.body;
-
   if (!token) {
     return res.status(400).json({ message: 'Token de restablecimiento no proporcionado.' });
   }
-  if (!password || !confirmPassword) {
-    return res.status(400).json({ message: 'Por favor, proporciona la nueva contraseña y su confirmación.' });
+  if (!requireStringFields(req, res, ["password", "confirmPassword"])) {
+    return;
   }
+  const { password, confirmPassword } = req.body;
   if (password !== confirmPassword) {
     return res.status(400).json({ message: 'Las contraseñas no coinciden.' });
   }
@@ -603,10 +612,10 @@ const changePassword = async (req, res) => {
 
 // --- REENVIAR CORREO DE VERIFICACIÓN (OPCIONAL PERO RECOMENDADO) ---
 const resendVerificationEmail = async (req, res) => {
-    const { email } = req.body;
-    if (!email) {
-        return res.status(400).json({ message: 'Por favor, proporciona tu correo electrónico.' });
+    if (!requireStringFields(req, res, ["email"])) {
+        return;
     }
+    const { email } = req.body;
 
     try {
         const user = await User.findOne({ email });
