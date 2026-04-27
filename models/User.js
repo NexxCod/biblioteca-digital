@@ -65,6 +65,10 @@ const userSchema = new mongoose.Schema(
   }
 );
 
+// Acelera consultas que filtran usuarios por pertenencia a grupos
+// (p.ej. groupController y users con un grupo asignado).
+userSchema.index({ groups: 1 });
+
 // Hook para hashear la contraseña antes de guardar
 userSchema.pre("save", async function (next) {
   if (!this.isModified("password")) return next();
