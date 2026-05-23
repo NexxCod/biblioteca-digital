@@ -59,6 +59,11 @@ const userSchema = new mongoose.Schema(
       type: Date,
       select: false,
     },
+    signature: {
+      type: String,
+      default: "",
+      maxlength: 4000,
+    },
   },
   {
     timestamps: true, // Añade createdAt y updatedAt
