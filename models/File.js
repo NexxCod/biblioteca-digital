@@ -1,6 +1,8 @@
 // backend/models/File.js
 import mongoose from 'mongoose';
 
+const FILE_STATUSES = ['approved', 'pending', 'rejected'];
+
 const fileSchema = new mongoose.Schema({
     filename: {
         type: String,
@@ -14,17 +16,17 @@ const fileSchema = new mongoose.Schema({
     fileType: {
         type: String,
         required: true,
-        enum: ['pdf', 'video', 'audio', 'word', 'image', 'excel', 'pptx', 'video_link', 'generic_link', 'other']
+        enum: ['pdf', 'video', 'audio', 'word', 'image', 'excel', 'pptx', 'archive', 'video_link', 'generic_link', 'other']
     },
-    driveFileId: { // CAMBIADO/AÑADIDO
+    driveFileId: {
         type: String,
         required: function() { return this.fileType !== 'video_link' && this.fileType !== 'generic_link'; }
     },
-    secureUrl: { 
+    secureUrl: {
         type: String,
         required: function() { return this.fileType === 'video_link' || this.fileType === 'generic_link'; }
     },
-    size: { // Tamaño en bytes
+    size: {
         type: Number,
         required: function() { return this.fileType !== 'video_link' && this.fileType !== 'generic_link'; }
     },
@@ -45,9 +47,35 @@ const fileSchema = new mongoose.Schema({
     assignedGroup: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Group',
-        default: null // null significa que es público (o visible según rol)
-    }
-
+        default: null
+    },
+    status: {
+        type: String,
+        enum: FILE_STATUSES,
+        default: 'approved',
+        index: true,
+    },
+    rejectionReason: {
+        type: String,
+        default: '',
+    },
+    reviewedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null,
+    },
+    reviewedAt: {
+        type: Date,
+        default: null,
+    },
+    notifyOnReady: {
+        type: Boolean,
+        default: false,
+    },
+    notificationSent: {
+        type: Boolean,
+        default: false,
+    },
 }, {
     timestamps: true
 });
@@ -55,8 +83,9 @@ const fileSchema = new mongoose.Schema({
 fileSchema.index({ folder: 1, filename: 1 });
 fileSchema.index({ tags: 1 });
 fileSchema.index({ filename: 'text', description: 'text' });
+fileSchema.index({ status: 1, createdAt: -1 });
 
 const File = mongoose.model('File', fileSchema);
 
-
-export default File; // Exportación por defecto para ESM
+export { FILE_STATUSES };
+export default File;

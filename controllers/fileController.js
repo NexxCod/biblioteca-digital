@@ -11,51 +11,42 @@ import mongoose from "mongoose";
 import fs from "fs";
 import { unlink } from "fs/promises";
 import path from "path";
-import { getGoogleDriveStorageQuota } from '../utils/getDriveStorage.js';
-import { userCanWriteFolder } from '../utils/folderPermissions.js';
+import { getGoogleDriveStorageQuota } from "../utils/getDriveStorage.js";
+import { userCanWriteFolder } from "../utils/folderPermissions.js";
+import {
+  classifyUploadByExtension,
+  getAppSettings,
+} from "../utils/appSettingsService.js";
+import { logAudit } from "../utils/auditLog.js";
+import { queueFileNotification } from "../utils/fileNotificationService.js";
 
-// --- Función auxiliar para sanitizar nombres de archivo (Simplificada) ---
 const sanitizeFilename = (filename) => {
-  // 1. Intenta corregir la codificación común incorrecta (Ã¡ -> á, etc.)
-  // Esto es un intento, puede que no cubra todos los casos.
   const fixes = {
     "Ã¡": "á",
     "Ã©": "é",
     "Ã­": "í",
     "Ã³": "ó",
     Ãº: "ú",
-    "Ã": "Á",
-    "Ã‰": "É",
-    "Ã": "Í",
-    "Ã“": "Ó",
-    Ãš: "Ú",
     "Ã±": "ñ",
     "Ã‘": "Ñ",
-    // Añade más reemplazos si detectas otros problemas de codificación
   };
-  let correctedFilename = filename;
+  let corrected = filename;
   for (const [bad, good] of Object.entries(fixes)) {
-    correctedFilename = correctedFilename.replace(new RegExp(bad, "g"), good);
+    corrected = corrected.replace(new RegExp(bad, "g"), good);
   }
-
-  // 2. Quita caracteres inválidos para nombres de archivo y reemplaza espacios múltiples
-  const invalidCharsRegex = /[/\\?%*:|"<>]/g; // Caracteres inválidos comunes
+  const invalidCharsRegex = /[/\\?%*:|"<>]/g;
   const multiSpaceRegex = /\s+/g;
-  let sanitized = correctedFilename
-    .replace(invalidCharsRegex, "_") // Reemplaza inválidos por _
+  let sanitized = corrected
+    .replace(invalidCharsRegex, "_")
     .replace(multiSpaceRegex, " ")
-    .trim(); // Normaliza espacios
-
+    .trim();
   if (!sanitized) {
-    sanitized = "downloaded_file" + path.extname(filename); // Añade extensión si quedó vacío
+    sanitized = "downloaded_file" + path.extname(filename);
   } else if (path.extname(sanitized) !== path.extname(filename)) {
-    // Asegurarse que la extensión original se mantiene si la sanitización la quitó
     sanitized += path.extname(filename);
   }
-
   return sanitized;
 };
-// --- Fin función auxiliar ---
 
 const getUserGroupIds = (req) =>
   req.userGroupIds ||
@@ -64,10 +55,7 @@ const getUserGroupIds = (req) =>
   );
 
 const cleanupUploadedTempFile = async (filePath) => {
-  if (!filePath) {
-    return;
-  }
-
+  if (!filePath) return;
   try {
     await unlink(filePath);
   } catch (error) {
@@ -82,37 +70,53 @@ const isGoogleInvalidGrantError = (error) =>
   error?.response?.data?.error === "invalid_grant" &&
   error?.config?.url?.includes("oauth2.googleapis.com/token");
 
-// Escapa los metacaracteres de regex para que la búsqueda del usuario
-// se trate como texto literal (evita ReDoS y matches accidentales).
 const escapeRegex = (value) =>
   String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+const detectFileType = (filename = "") => {
+  const ext = path.extname(filename).toLowerCase().substring(1);
+  if (ext === "pdf") return "pdf";
+  if (["doc", "docx"].includes(ext)) return "word";
+  if (["xls", "xlsx"].includes(ext)) return "excel";
+  if (["ppt", "pptx"].includes(ext)) return "pptx";
+  if (["jpg", "jpeg", "png", "gif"].includes(ext)) return "image";
+  if (["mp4"].includes(ext)) return "video";
+  if (["mp3", "aac", "wav", "flac", "aiff", "alac", "ogg"].includes(ext))
+    return "audio";
+  if (["zip", "rar", "7z", "tar", "gz", "tgz"].includes(ext)) return "archive";
+  return "other";
+};
+
+// Filtro de visibilidad — excluye pending/rejected salvo admin o uploader.
 const buildFilePermissionFilter = (req) => {
   const user = req.user;
+  if (!user) return null;
 
-  if (!user) {
-    return null;
-  }
-
-  if (user.role === "admin") {
-    return {};
-  }
+  // El admin ve todo
+  if (user.role === "admin") return {};
 
   const userGroupIds = getUserGroupIds(req).filter(Boolean);
 
+  // Visibilidad por estado: el uploader ve sus propios pendings/rejected,
+  // los demás solo ven approved.
+  const statusFilter = {
+    $or: [{ status: "approved" }, { uploadedBy: user._id }],
+  };
+
+  let roleFilter;
   if (user.role === "residente") {
-    return {
+    roleFilter = {
       $or: [{ assignedGroup: null }, { assignedGroup: { $in: userGroupIds } }],
     };
-  }
-
-  if (user.role === "docente") {
-    return {
+  } else if (user.role === "docente") {
+    roleFilter = {
       $or: [{ uploadedBy: user._id }, { assignedGroup: { $in: userGroupIds } }],
     };
+  } else {
+    return null;
   }
 
-  return null;
+  return { $and: [statusFilter, roleFilter] };
 };
 
 const buildFileCriteriaFilter = ({
@@ -124,31 +128,20 @@ const buildFileCriteriaFilter = ({
   search,
 }) => {
   const criteriaFilter = {};
-
-  if (folderId) {
-    criteriaFilter.folder = folderId;
-  }
-
+  if (folderId) criteriaFilter.folder = folderId;
   if (fileType) {
     const validTypes = File.schema.path("fileType").enumValues;
     if (validTypes.includes(fileType)) {
       criteriaFilter.fileType = fileType;
-    } else {
-      console.warn(`Tipo de archivo inválido solicitado: ${fileType}`);
     }
   }
-
   if (tags) {
     const tagIdArray = tags
       .split(",")
       .map((id) => id.trim())
       .filter((id) => mongoose.Types.ObjectId.isValid(id));
-
-    if (tagIdArray.length > 0) {
-      criteriaFilter.tags = { $in: tagIdArray };
-    }
+    if (tagIdArray.length > 0) criteriaFilter.tags = { $in: tagIdArray };
   }
-
   const dateFilter = {};
   if (startDate) {
     const date = new Date(startDate);
@@ -167,12 +160,13 @@ const buildFileCriteriaFilter = ({
   if (Object.keys(dateFilter).length > 0) {
     criteriaFilter.createdAt = dateFilter;
   }
-
   if (search) {
     const searchRegex = new RegExp(escapeRegex(search.trim()), "i");
-    criteriaFilter.$or = [{ filename: searchRegex }, { description: searchRegex }];
+    criteriaFilter.$or = [
+      { filename: searchRegex },
+      { description: searchRegex },
+    ];
   }
-
   return criteriaFilter;
 };
 
@@ -186,7 +180,12 @@ const respondWithFileList = async ({
   page,
   limit,
 }) => {
-  const finalFilter = isAdmin ? criteriaFilter : { $and: [criteriaFilter, permissionFilter] };
+  // Admin: por defecto excluye pending/rejected del listado general
+  // (los vé en su panel dedicado). Si quieren incluir, agregamos otro endpoint.
+  const adminBaseFilter = isAdmin ? { status: "approved" } : {};
+  const finalFilter = isAdmin
+    ? { $and: [criteriaFilter, adminBaseFilter] }
+    : { $and: [criteriaFilter, permissionFilter] };
 
   const sortOptions = {};
   const validSortBy = ["createdAt", "filename"];
@@ -203,7 +202,7 @@ const respondWithFileList = async ({
   const query = File.find(finalFilter)
     .sort(sortOptions)
     .select(
-      "filename description fileType driveFileId secureUrl size folder tags uploadedBy assignedGroup createdAt updatedAt"
+      "filename description fileType driveFileId secureUrl size folder tags uploadedBy assignedGroup status rejectionReason createdAt updatedAt"
     )
     .populate("folder", "name")
     .populate("uploadedBy", "username email")
@@ -211,18 +210,14 @@ const respondWithFileList = async ({
     .populate("assignedGroup", "name")
     .lean();
 
-  if (usePagination) {
-    query.skip(skip).limit(parsedLimit);
-  }
+  if (usePagination) query.skip(skip).limit(parsedLimit);
 
   const [files, totalItems] = await Promise.all([
     query,
     usePagination ? File.countDocuments(finalFilter) : Promise.resolve(null),
   ]);
 
-  if (!usePagination) {
-    return res.status(200).json(files);
-  }
+  if (!usePagination) return res.status(200).json(files);
 
   const totalPages = Math.max(Math.ceil(totalItems / parsedLimit), 1);
 
@@ -239,22 +234,17 @@ const respondWithFileList = async ({
   });
 };
 
-// --- Controlador para Subir Archivo ---
+// --- Subir archivo ---
 const uploadFile = async (req, res) => {
   const tempFilePath = req.file?.path;
- 
-  // 1. Verificar que Multer procesó un archivo
+
   if (!req.file) {
-    return res
-      .status(400)
-      .json({ message: "No se proporcionó ningún archivo." });
+    return res.status(400).json({ message: "No se proporcionó ningún archivo." });
   }
 
-  // 2. Obtener datos adicionales del cuerpo (si los enviaste)
-  // Estos deben venir como campos en el mismo form-data que el archivo
-  const { description, folderId, tags, assignedGroupId } = req.body; // Asumimos que se envían folderId y tags (como string separado por comas, por ejemplo)
+  const { description, folderId, tags, assignedGroupId, notifyOnReady } =
+    req.body;
 
-  // Validación simple (necesitas una carpeta donde guardar!)
   if (!folderId || !mongoose.Types.ObjectId.isValid(folderId)) {
     await cleanupUploadedTempFile(tempFilePath);
     return res
@@ -262,7 +252,6 @@ const uploadFile = async (req, res) => {
       .json({ message: "Se requiere especificar la carpeta (folderId)." });
   }
 
-  // Verificar que la carpeta existe y que el usuario tiene permiso para escribir en ella.
   const targetFolder = await Folder.findById(folderId).lean();
   if (!targetFolder) {
     await cleanupUploadedTempFile(tempFilePath);
@@ -277,7 +266,6 @@ const uploadFile = async (req, res) => {
       .json({ message: "No tienes permiso para subir contenido a esta carpeta." });
   }
 
-  // Validación de assignedGroupId (NUEVO) - Igual que en createFolder
   let validatedGroupId = null;
   if (assignedGroupId) {
     if (!mongoose.Types.ObjectId.isValid(assignedGroupId)) {
@@ -286,23 +274,30 @@ const uploadFile = async (req, res) => {
         .status(400)
         .json({ message: "El assignedGroupId proporcionado no es válido." });
     }
-    try {
-      const groupExists = await Group.findById(assignedGroupId);
-      if (!groupExists) {
-        await cleanupUploadedTempFile(tempFilePath);
-        return res
-          .status(404)
-          .json({ message: "El grupo asignado no existe." });
-      }
-      validatedGroupId = assignedGroupId;
-    } catch (error) {
-      console.error("Error buscando grupo asignado:", error);
+    const groupExists = await Group.findById(assignedGroupId);
+    if (!groupExists) {
       await cleanupUploadedTempFile(tempFilePath);
-      return res
-        .status(500)
-        .json({ message: "Error al verificar el grupo asignado." });
+      return res.status(404).json({ message: "El grupo asignado no existe." });
     }
+    validatedGroupId = assignedGroupId;
   }
+
+  // Clasificación según whitelist dinámica
+  const settings = await getAppSettings();
+  const { decision } = classifyUploadByExtension(
+    req.file.originalname || "",
+    settings
+  );
+
+  if (decision === "blocked") {
+    await cleanupUploadedTempFile(tempFilePath);
+    return res
+      .status(415)
+      .json({ message: "Extensión bloqueada por política de seguridad." });
+  }
+
+  // admin sube siempre como approved
+  const initialStatus = req.user.role === "admin" ? "approved" : decision;
 
   try {
     const sanitizedOriginalName = sanitizeFilename(req.file?.originalname || "");
@@ -312,105 +307,41 @@ const uploadFile = async (req, res) => {
 
     const driveResponse = await googleDriveClient.files.create({
       requestBody: {
-        name: sanitizedOriginalName, // Nombre del archivo en Drive
-         // ID de la carpeta de Google Drive donde se subirá el archivo (desde variables de entorno)
+        name: sanitizedOriginalName,
         parents: [googleDriveFolderId],
-         // Puedes añadir description aquí si quieres que se refleje en los metadatos de Drive
-        description: description || '',
+        description: description || "",
       },
       media: {
-        mimeType: req.file.mimetype, // Tipo MIME del archivo
+        mimeType: req.file.mimetype,
         body: uploadStream,
       },
-       // Campos que quieres que te devuelva Google Drive en la respuesta
-       // webContentLink o webViewLink son útiles para acceder al archivo
-       fields: 'id, name, webContentLink, size, mimeType, parents, description',
+      fields: "id, name, webContentLink, size, mimeType, parents, description",
     });
 
     const driveFile = driveResponse.data;
-    console.log('Archivo subido a Google Drive:', driveFile);
 
-    // --- Opcional pero Común: Crear Permiso de Lectura Público ---
-    // Esto hace que el archivo sea accesible para cualquiera con el enlace.
-    // Adapta según tus necesidades de seguridad y grupos.
-     let sharedLink = driveFile.webContentLink; // Enlace de descarga si existe
-     try {
-         const permissionResponse = await googleDriveClient.permissions.create({
-             fileId: driveFile.id,
-             requestBody: {
-                 role: 'reader', // Permiso de lectura
-                 type: 'anyone', // Para cualquier persona
-             },
-             fields: 'id, role, type', // Campos que quieres de la respuesta de permisos
-         });
-         console.log('Permiso de lectura público creado para:', driveFile.id);
-         // Google Drive puede actualizar el webContentLink después de cambiar permisos
-         // Podrías re-obtener el archivo o asumir que el webContentLink es ahora público
-         // Para mayor seguridad, podrías obtener el enlace compartible específico con Drive API si webContentLink no es suficiente
-         // const updatedFileMetadata = await googleDriveClient.files.get({fileId: driveFile.id, fields: 'webContentLink'});
-         // sharedLink = updatedFileMetadata.data.webContentLink;
+    let sharedLink = driveFile.webContentLink;
+    try {
+      await googleDriveClient.permissions.create({
+        fileId: driveFile.id,
+        requestBody: { role: "reader", type: "anyone" },
+        fields: "id, role, type",
+      });
+    } catch (permError) {
+      console.error("Error creando permiso público en Drive:", permError);
+    }
 
-     } catch (permError) {
-         console.error("Error al crear permiso de lectura público:", permError);
-       // *** Log Detallado para Error de Permisos ***
-       console.error("------ ERROR AL CREAR PERMISO DE LECTURA EN DRIVE ------");
-       console.error("Mensaje:", permError.message);
-       console.error("Código:", permError.code);
-       console.error("Errores detallados:", permError.errors);
-       console.error("Stack:", permError.stack);
-       console.error("Error Completo (stringify):", JSON.stringify(permError, null, 2));
-       console.error('------------------------------------------------------');
-       // Decidir si continuar o no. Por ahora, sólo logueamos el error.
-     }
-     // --- Fin Lógica de Permiso ---
-
-
-    // --- LÓGICA DE DETECCIÓN DE fileType MEJORADA ---
-    let fileType = "other"; // Por defecto
-    const originalNameRaw = req.file?.originalname || "";
-    const fileExtension = path
-      .extname(originalNameRaw)
-      .toLowerCase()
-      .substring(1);
-
-    if (fileExtension === "pdf") {
-      fileType = "pdf";
-    } else if (["doc", "docx"].includes(fileExtension)) {
-      fileType = "word";
-    } else if (["xls", "xlsx"].includes(fileExtension)) {
-      fileType = "excel";
-    } else if (["ppt", "pptx"].includes(fileExtension)) {
-      fileType = "pptx";
-    } else if (["jpg", "jpeg", "png", "gif"].includes(fileExtension)) {
-      fileType = "image";
-    } else if (["mp4"].includes(fileExtension)) {
-      fileType = "video";
-    } else if ([
-      "mp3",
-      "aac",
-      "wav",
-      "flac",
-      "aiff",
-      "alac",
-      "ogg"
-    ].includes(fileExtension)) {
-      fileType = "audio";
-    } 
-
-
-    // Procesar tags si vienen como string separado por comas
     let tagIds = [];
     if (tags && typeof tags === "string") {
       const tagNames = tags
         .split(",")
         .map((tag) => tag.trim().toLowerCase())
         .filter(Boolean);
-
       tagIds = await Promise.all(
         tagNames.map(async (name) => {
           const tag = await Tag.findOneAndUpdate(
-            { name: name },
-            { $setOnInsert: { name: name, createdBy: req.user._id } },
+            { name },
+            { $setOnInsert: { name, createdBy: req.user._id } },
             { upsert: true, new: true, runValidators: true }
           );
           return tag._id;
@@ -418,76 +349,64 @@ const uploadFile = async (req, res) => {
       );
     }
 
-   
-
     const newFile = await File.create({
       filename: driveFile.name,
       description: driveFile.description || description || "",
-      fileType: fileType,
+      fileType: detectFileType(driveFile.name),
       driveFileId: driveFile.id,
-      secureUrl: sharedLink || driveFile.webContentLink || driveFile.webViewLink || null, 
-      size: driveFile.size || 0, 
-      folder: folderId, // ID de la carpeta
-      tags: tagIds, // IDs de las etiquetas (requiere lógica adicional)
-      uploadedBy: req.user._id, // ID del usuario logueado (viene de 'protect')
+      secureUrl: sharedLink || driveFile.webContentLink || driveFile.webViewLink || null,
+      size: driveFile.size || 0,
+      folder: folderId,
+      tags: tagIds,
+      uploadedBy: req.user._id,
       assignedGroup: validatedGroupId,
+      status: initialStatus,
+      notifyOnReady: notifyOnReady === "true" || notifyOnReady === true,
     });
 
-    // 6. Enviar respuesta exitosa
+    await logAudit({
+      req,
+      action: "upload",
+      targetType: "file",
+      targetId: newFile._id,
+      targetName: newFile.filename,
+      metadata: {
+        folderId,
+        size: newFile.size,
+        status: newFile.status,
+        fileType: newFile.fileType,
+      },
+    });
+
+    if (newFile.status === "approved" && newFile.notifyOnReady) {
+      queueFileNotification(newFile);
+    }
 
     const populatedFile = await File.findById(newFile._id)
       .populate("uploadedBy", "username email")
       .populate("tags", "name")
       .populate("assignedGroup", "name");
     res.status(201).json(populatedFile || newFile);
-  } catch (error) { // *** CAPTURA DE ERROR PRINCIPAL CORREGIDA ***
-      console.error('------ ERROR EN EL PROCESO DE SUBIDA (uploadFile) ------');
-    
-        // Verificar si el error viene de la API de Google (suele tener 'code' y 'errors')
-        if (error.code && error.errors) {
-             console.error(">>> Error detectado de la API de Google <<<");
-             console.error("Mensaje Principal API:", error.message);
-             console.error("Código HTTP API:", error.code);
-             console.error("Errores Detallados API:", error.errors);
-             // Imprimir el 'reason' específico si existe, ¡es clave!
-             if (error.errors && error.errors.length > 0) {
-                 console.error("Razón específica del error API:", error.errors[0].reason);
-                 console.error("Dominio del error API:", error.errors[0].domain);
-             }
-        } else {
-             // Error general (puede ser de Mongoose, código JS, etc.)
-             console.error(">>> Error general del servidor <<<");
-             console.error("Mensaje:", error.message);
-        }
-    
-        // Loguear siempre el stack trace y el objeto completo para diagnóstico
-        console.error("Stack Trace Completo:", error.stack);
-        console.error("Objeto de Error Completo (stringify):", JSON.stringify(error, null, 2));
-      console.error('------------------------------------------------------');
-    
-      if (isGoogleInvalidGrantError(error)) {
-        return res.status(502).json({
-          message:
-            "No se pudo conectar con Google Drive porque la autorización expiró o fue revocada. Reautoriza la integración.",
-          code: "GOOGLE_DRIVE_AUTH_INVALID_GRANT",
-        });
-      }
+  } catch (error) {
+    console.error("Error en uploadFile:", error);
+    if (isGoogleInvalidGrantError(error)) {
+      return res.status(502).json({
+        message:
+          "No se pudo conectar con Google Drive porque la autorización expiró o fue revocada.",
+        code: "GOOGLE_DRIVE_AUTH_INVALID_GRANT",
+      });
+    }
+    return res.status(500).json({
+      message: "Error interno del servidor al procesar el archivo.",
+      errorRef: "UPLOAD_FAIL",
+    });
+  } finally {
+    await cleanupUploadedTempFile(tempFilePath);
+  }
+};
 
-      // Enviar respuesta de error genérica al cliente
-      return res.status(500).json({ // Usar 500 como default, o error.code si es un error de API HTTP
-            message: "Error interno del servidor al procesar el archivo.",
-            // Opcional: Enviar detalles MUY limitados o un código de error para rastreo
-            // NUNCA enviar el error.stack o detalles internos sensibles al cliente en producción
-            errorRef: "UPLOAD_FAIL" // Un código que puedes buscar en tus logs
-        });
-     } finally {
-      await cleanupUploadedTempFile(tempFilePath);
-     }
-    };
-
-//  Controlador para Listar Archivos por Carpeta ---
+// --- Listar archivos ---
 const getFilesByFolder = async (req, res) => {
-  // 1. Extraer TODOS los posibles query parameters
   const {
     folderId,
     fileType,
@@ -508,14 +427,13 @@ const getFilesByFolder = async (req, res) => {
     return res.status(401).json({ message: "Usuario no autenticado." });
   }
 
-  if (!normalizedFolderId) {
-    try {
-      const permissionFilter = buildFilePermissionFilter(req);
+  try {
+    const permissionFilter = buildFilePermissionFilter(req);
+    if (permissionFilter === null) {
+      return res.status(403).json({ message: "Rol no autorizado." });
+    }
 
-      if (permissionFilter === null) {
-        return res.status(403).json({ message: "Rol no autorizado." });
-      }
-
+    if (!normalizedFolderId) {
       const criteriaFilter = buildFileCriteriaFilter({
         fileType,
         tags,
@@ -523,7 +441,6 @@ const getFilesByFolder = async (req, res) => {
         endDate,
         search,
       });
-
       return await respondWithFileList({
         res,
         criteriaFilter,
@@ -534,201 +451,52 @@ const getFilesByFolder = async (req, res) => {
         page,
         limit,
       });
-    } catch (error) {
-      console.error("Error al obtener archivos globales:", error);
-      return res
-        .status(500)
-        .json({ message: "Error interno del servidor al obtener archivos." });
-    }
-  }
-
-  // Validación base (folderId sigue siendo requerido por ahora)
-  if (!folderId || !mongoose.Types.ObjectId.isValid(folderId)) {
-    return res.status(400).json({ message: "Se requiere un folderId válido." });
-  }
-  if (!user) {
-    return res.status(401).json({ message: "Usuario no autenticado." });
-  }
-
-  try {
-    // 2. Construir Filtro de Permisos (igual que antes)
-    let permissionFilter = {};
-    const isAdmin = user.role === "admin";
-    if (!isAdmin) {
-      const userGroupIds = getUserGroupIds(req);
-      if (user.role === "residente") {
-        permissionFilter = {
-          $or: [
-            { assignedGroup: null },
-            { assignedGroup: { $in: userGroupIds } },
-          ],
-        };
-      } else if (user.role === "docente") {
-        permissionFilter = {
-          $or: [
-            { uploadedBy: user._id },
-            { assignedGroup: { $in: userGroupIds } },
-          ],
-        };
-      } else {
-        return res.status(403).json({ message: "Rol no autorizado." });
-      }
-    } // Si es admin, permissionFilter queda vacío {}
-
-    // 3. Construir Filtro de Criterios del Usuario
-    let criteriaFilter = { folder: folderId }; // Siempre filtramos por carpeta
-
-    // Añadir filtro por tipo de archivo
-    if (fileType) {
-      // Opcional: Validar contra el enum del modelo File
-      const validTypes = File.schema.path("fileType").enumValues;
-      if (validTypes.includes(fileType)) {
-        criteriaFilter.fileType = fileType;
-      } else {
-        console.warn(`Tipo de archivo inválido solicitado: ${fileType}`);
-        // Podrías devolver un error 400 o simplemente ignorar el filtro inválido
-      }
     }
 
-    // Añadir filtro por tags (espera IDs separados por coma)
-    if (tags) {
-      const tagIdArray = tags
-        .split(",")
-        .map((id) => id.trim())
-        .filter((id) => mongoose.Types.ObjectId.isValid(id)); // Valida que sean ObjectIds
-
-      if (tagIdArray.length > 0) {
-        // $all: el archivo DEBE tener TODAS las tags especificadas
-        criteriaFilter.tags = { $in: tagIdArray };
-        // Si quisieras que coincida con CUALQUIERA de las tags, usarías:
-        // criteriaFilter.tags = { $in: tagIdArray };
-      }
+    if (!mongoose.Types.ObjectId.isValid(normalizedFolderId)) {
+      return res.status(400).json({ message: "Se requiere un folderId válido." });
     }
 
-    // Añadir filtro por fecha de creación (createdAt)
-    let dateFilter = {};
-    if (startDate) {
-      const date = new Date(startDate);
-      if (!isNaN(date)) {
-        // Verifica si la fecha es válida
-        date.setUTCHours(0, 0, 0, 0); // Considerar desde el inicio del día UTC
-        dateFilter.$gte = date;
-      }
-    }
-    if (endDate) {
-      const date = new Date(endDate);
-      if (!isNaN(date)) {
-        date.setUTCHours(23, 59, 59, 999); // Considerar hasta el final del día UTC
-        dateFilter.$lte = date;
-      }
-    }
-    if (Object.keys(dateFilter).length > 0) {
-      criteriaFilter.createdAt = dateFilter;
-    }
+    const criteriaFilter = buildFileCriteriaFilter({
+      folderId: normalizedFolderId,
+      fileType,
+      tags,
+      startDate,
+      endDate,
+      search,
+    });
 
-    // Añadir filtro de búsqueda por texto (case-insensitive en filename y description)
-    if (search) {
-      const searchRegex = new RegExp(escapeRegex(search.trim()), "i"); // 'i' para case-insensitive
-      criteriaFilter.$or = [
-        { filename: searchRegex },
-        { description: searchRegex },
-      ];
-      // Nota: Para búsquedas más eficientes en campos grandes, considera usar índices de texto de MongoDB ($text: { $search: ... })
-      // lo cual requeriría añadir fileSchema.index({ filename: 'text', description: 'text' }) en File.js
-    }
-
-    // 4. Combinar Filtros: Criterios Y Permisos (si no es admin)
-    let finalFilter = {};
-    if (isAdmin) {
-      finalFilter = criteriaFilter; // Admin solo usa los criterios dentro de la carpeta
-    } else {
-      // Los demás usan los criterios Y ADEMÁS sus permisos
-      finalFilter = { $and: [criteriaFilter, permissionFilter] };
-    }
-
-    // --- 5. Construir opciones de Ordenación (NUEVO) ---
-    let sortOptions = {};
-    const validSortBy = ['createdAt', 'filename']; // Campos permitidos para ordenar
-    const validSortOrder = ['asc', 'desc']; // Direcciones permitidas
-
-    const sBy = validSortBy.includes(sortBy) ? sortBy : 'createdAt'; // Valor por defecto
-    const sOrder = validSortOrder.includes(sortOrder) ? sortOrder : 'desc'; // Valor por defecto
-
-    sortOptions[sBy] = sOrder === 'asc' ? 1 : -1; // 1 para ascendente, -1 para descendente
-    // --------------------------------------------------
-
-    const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
-    const parsedLimit = Math.min(
-      Math.max(parseInt(limit, 10) || 24, 1),
-      100
-    );
-    const skip = (parsedPage - 1) * parsedLimit;
-    const usePagination = Boolean(page || limit);
-
-    const query = File.find(finalFilter)
-      .sort(sortOptions)
-      .select(
-        "filename description fileType driveFileId secureUrl size folder tags uploadedBy assignedGroup createdAt updatedAt"
-      )
-      .populate("folder", "name")
-      .populate("uploadedBy", "username email")
-      .populate("tags", "name")
-      .populate("assignedGroup", "name")
-      .lean();
-
-    if (usePagination) {
-      query.skip(skip).limit(parsedLimit);
-    }
-
-    const [files, totalItems] = await Promise.all([
-      query,
-      usePagination ? File.countDocuments(finalFilter) : Promise.resolve(null),
-    ]);
-
-    if (!usePagination) {
-      return res.status(200).json(files);
-    }
-
-    const totalPages = Math.max(Math.ceil(totalItems / parsedLimit), 1);
-
-    res.status(200).json({
-      items: files,
-      pagination: {
-        page: parsedPage,
-        limit: parsedLimit,
-        totalItems,
-        totalPages,
-        hasNextPage: parsedPage < totalPages,
-        hasPrevPage: parsedPage > 1,
-      },
+    return await respondWithFileList({
+      res,
+      criteriaFilter,
+      permissionFilter,
+      isAdmin: user.role === "admin",
+      sortBy,
+      sortOrder,
+      page,
+      limit,
     });
   } catch (error) {
-    console.error("Error al obtener archivos por carpeta:", error);
-    res
+    console.error("Error obteniendo archivos:", error);
+    return res
       .status(500)
       .json({ message: "Error interno del servidor al obtener archivos." });
   }
 };
 
-//  Controlador para Añadir Enlace  ---
+// --- Añadir enlace ---
 const addLink = async (req, res) => {
-  // 1. Obtener datos del cuerpo (esperamos JSON aquí, no form-data)
-  const { url, title, description, folderId, tags, assignedGroupId } =
-    req.body;
+  const { url, title, description, folderId, tags, assignedGroupId } = req.body;
 
-  // 2. Validación básica
   if (!url || !title || !folderId) {
-    return res.status(400).json({ message: 'Se requiere URL, título y folderId.' });
-}
-
-  // Validación simple de formato de URL de YouTube (puede ser más robusta)
+    return res.status(400).json({ message: "Se requiere URL, título y folderId." });
+  }
   try {
-    new URL(url); // Intenta crear un objeto URL para validar formato básico
-} catch (_) {
-    return res.status(400).json({ message: 'La URL proporcionada no es válida.' });
-}
+    new URL(url);
+  } catch {
+    return res.status(400).json({ message: "La URL proporcionada no es válida." });
+  }
 
-  // Validación de assignedGroupId (NUEVO) - Igual que en createFolder
   let validatedGroupId = null;
   if (assignedGroupId) {
     if (!mongoose.Types.ObjectId.isValid(assignedGroupId)) {
@@ -736,59 +504,32 @@ const addLink = async (req, res) => {
         .status(400)
         .json({ message: "El assignedGroupId proporcionado no es válido." });
     }
-    try {
-      const groupExists = await Group.findById(assignedGroupId);
-      if (!groupExists) {
-        return res
-          .status(404)
-          .json({ message: "El grupo asignado no existe." });
-      }
-      validatedGroupId = assignedGroupId;
-    } catch (error) {
-      console.error("Error buscando grupo asignado:", error);
-      return res
-        .status(500)
-        .json({ message: "Error al verificar el grupo asignado." });
+    const groupExists = await Group.findById(assignedGroupId);
+    if (!groupExists) {
+      return res.status(404).json({ message: "El grupo asignado no existe." });
     }
+    validatedGroupId = assignedGroupId;
   }
 
-  // Validar carpeta existe y permisos de escritura del usuario
   if (!mongoose.Types.ObjectId.isValid(folderId)) {
     return res.status(400).json({ message: "FolderId inválido." });
   }
-  try {
-    const folderExists = await Folder.findById(folderId).lean();
-    if (!folderExists) {
-      return res
-        .status(404)
-        .json({ message: "La carpeta especificada no existe." });
-    }
-    if (!userCanWriteFolder(req, folderExists)) {
-      return res
-        .status(403)
-        .json({ message: "No tienes permiso para añadir enlaces a esta carpeta." });
-    }
-  } catch (error) {
-    console.error("Error buscando carpeta:", error);
+  const folderExists = await Folder.findById(folderId).lean();
+  if (!folderExists) {
+    return res.status(404).json({ message: "La carpeta especificada no existe." });
+  }
+  if (!userCanWriteFolder(req, folderExists)) {
     return res
-      .status(500)
-      .json({ message: "Error al buscar la carpeta." });
+      .status(403)
+      .json({ message: "No tienes permiso para añadir enlaces a esta carpeta." });
   }
 
-  
-
   try {
-     // --- DETECCIÓN DE TIPO DE LINK ---
-     let linkFileType = 'generic_link'; // Por defecto
-     // Regex simple para detectar URLs de YouTube (youtu.be o youtube.com/watch?v=...)
-     const youtubeRegex = /^(https?:\/\/)?(www\.youtube\.com|youtu\.be)\/.+$/;
-     if (youtubeRegex.test(url)) {
-         linkFileType = 'video_link'; // Es YouTube
-     }
-     // --- FIN DETECCIÓN ---
+    let linkFileType = "generic_link";
+    const youtubeRegex = /^(https?:\/\/)?(www\.youtube\.com|youtu\.be)\/.+$/;
+    if (youtubeRegex.test(url)) linkFileType = "video_link";
 
-    // 3. Procesar tags (misma lógica placeholder que en uploadFile)
-    let tagIds = []; // Inicializa como array vacío
+    let tagIds = [];
     if (tags && typeof tags === "string") {
       const tagNames = tags
         .split(",")
@@ -797,8 +538,8 @@ const addLink = async (req, res) => {
       tagIds = await Promise.all(
         tagNames.map(async (name) => {
           const tag = await Tag.findOneAndUpdate(
-            { name: name },
-            { $setOnInsert: { name: name, createdBy: req.user._id } },
+            { name },
+            { $setOnInsert: { name, createdBy: req.user._id } },
             { upsert: true, new: true, runValidators: true }
           );
           return tag._id;
@@ -806,21 +547,29 @@ const addLink = async (req, res) => {
       );
     }
 
-    // 4. Crear el documento en la colección 'files'
     const newLinkFile = await File.create({
-      filename: title, // Usamos el título como nombre de archivo
+      filename: title,
       description: description || "",
-      fileType: linkFileType, // ¡Tipo específico!
-      driveFileId: null, // No aplica para enlaces
-      secureUrl: url.trim(), // Guardamos la URL de YouTube aquí
-      size: 0, // No aplica
+      fileType: linkFileType,
+      driveFileId: null,
+      secureUrl: url.trim(),
+      size: 0,
       folder: folderId,
-      tags: tagIds, // Usamos el array (vacío por ahora)
-      uploadedBy: req.user._id, // ID del usuario logueado
-      assignedGroup: validatedGroupId, // Guarda el ID validado o null
+      tags: tagIds,
+      uploadedBy: req.user._id,
+      assignedGroup: validatedGroupId,
+      status: "approved", // los enlaces no pasan por aprobación
     });
 
-    // 5. Enviar respuesta exitosa
+    await logAudit({
+      req,
+      action: "add_link",
+      targetType: "file",
+      targetId: newLinkFile._id,
+      targetName: newLinkFile.filename,
+      metadata: { folderId, fileType: linkFileType },
+    });
+
     const populatedFile = await File.findById(newLinkFile._id)
       .populate("uploadedBy", "username email")
       .populate("tags", "name")
@@ -834,39 +583,30 @@ const addLink = async (req, res) => {
   }
 };
 
-// --- NUEVO Controlador para Actualizar Archivo/Enlace ---
+// --- Actualizar archivo ---
 const updateFile = async (req, res) => {
-  const { id: fileId } = req.params; // Obtener ID del archivo de la URL
-  // Campos potencialmente actualizables del body (JSON)
+  const { id: fileId } = req.params;
   const { filename, description, tags, folderId, assignedGroupId } = req.body;
 
-  // Validar el ID del archivo
   if (!mongoose.Types.ObjectId.isValid(fileId)) {
     return res.status(400).json({ message: "ID de archivo inválido." });
   }
 
   try {
-    // 1. Encontrar el archivo/enlace existente
     const file = await File.findById(fileId);
     if (!file) {
-      return res
-        .status(404)
-        .json({ message: "Archivo o enlace no encontrado." });
+      return res.status(404).json({ message: "Archivo o enlace no encontrado." });
     }
 
-    // 2. Verificar Permisos
     const isAdmin = req.user.role === "admin";
     const isOwner = file.uploadedBy.toString() === req.user._id.toString();
-
     if (!isAdmin && !isOwner) {
       return res
         .status(403)
         .json({ message: "No autorizado para modificar este recurso." });
     }
 
-    // 3. Validar y Procesar Campos a Actualizar
-
-    // Validar folderId si se proporciona (mover a otra carpeta)
+    let previousFolderId = null;
     if (folderId) {
       if (!mongoose.Types.ObjectId.isValid(folderId))
         return res
@@ -882,12 +622,13 @@ const updateFile = async (req, res) => {
           .status(403)
           .json({ message: "No tienes permiso para mover el archivo a esa carpeta." });
       }
+      if (file.folder.toString() !== folderId) {
+        previousFolderId = file.folder.toString();
+      }
       file.folder = folderId;
     }
 
-    // Validar assignedGroupId si se proporciona
     if (assignedGroupId !== undefined) {
-      // Permitir asignar a null (público)
       if (
         assignedGroupId !== null &&
         !mongoose.Types.ObjectId.isValid(assignedGroupId)
@@ -899,24 +640,14 @@ const updateFile = async (req, res) => {
       if (assignedGroupId) {
         const groupExists = await Group.findById(assignedGroupId);
         if (!groupExists)
-          return res
-            .status(404)
-            .json({ message: "El grupo asignado no existe." });
+          return res.status(404).json({ message: "El grupo asignado no existe." });
       }
-      file.assignedGroup = assignedGroupId; // Actualizar grupo (puede ser null)
+      file.assignedGroup = assignedGroupId;
     }
 
-    // Actualizar filename/título si se proporciona
-    if (filename) {
-      file.filename = filename;
-    }
+    if (filename) file.filename = filename;
+    if (description !== undefined) file.description = description;
 
-    // Actualizar descripción si se proporciona (permite string vacío)
-    if (description !== undefined) {
-      file.description = description;
-    }
-
-    // Procesar y actualizar tags si se proporcionan
     if (tags !== undefined) {
       let tagIds = [];
       if (tags && typeof tags === "string") {
@@ -927,21 +658,30 @@ const updateFile = async (req, res) => {
         tagIds = await Promise.all(
           tagNames.map(async (name) => {
             const tag = await Tag.findOneAndUpdate(
-              { name: name },
-              { $setOnInsert: { name: name, createdBy: req.user._id } },
+              { name },
+              { $setOnInsert: { name, createdBy: req.user._id } },
               { upsert: true, new: true, runValidators: true }
             );
             return tag._id;
           })
         );
       }
-      file.tags = tagIds; // Actualiza el array de tags (puede ser vacío si tags="")
+      file.tags = tagIds;
     }
 
-    // 4. Guardar los cambios en la BD
     const updatedFile = await file.save();
 
-    // 5. Devolver el archivo actualizado y poblado
+    await logAudit({
+      req,
+      action: previousFolderId ? "move_file" : "update_file",
+      targetType: "file",
+      targetId: updatedFile._id,
+      targetName: updatedFile.filename,
+      metadata: previousFolderId
+        ? { fromFolder: previousFolderId, toFolder: folderId }
+        : { fields: Object.keys(req.body || {}) },
+    });
+
     const populatedFile = await File.findById(updatedFile._id)
       .populate("uploadedBy", "username email")
       .populate("tags", "name")
@@ -955,62 +695,56 @@ const updateFile = async (req, res) => {
   }
 };
 
-// --- NUEVO Controlador para Eliminar Archivo/Enlace ---
-const deleteFile = async (req, res) => {
-  const { id: fileId } = req.params; // Obtener ID del archivo de la URL
+const deleteDriveFileSafely = async (driveFileId) => {
+  if (!driveFileId) return;
+  try {
+    const driveClient = await getActiveGoogleDriveClient();
+    await driveClient.files.delete({ fileId: driveFileId });
+  } catch (error) {
+    console.error("Error eliminando archivo de Drive:", error?.message || error);
+  }
+};
 
-  // Validar el ID del archivo
+// --- Eliminar archivo ---
+const deleteFile = async (req, res) => {
+  const { id: fileId } = req.params;
+
   if (!mongoose.Types.ObjectId.isValid(fileId)) {
     return res.status(400).json({ message: "ID de archivo inválido." });
   }
 
   try {
-    // 1. Encontrar el archivo/enlace existente
     const file = await File.findById(fileId);
-    if (!file) {
+    if (!file) return res.status(204).send();
 
-      return res.status(204).send();
-    }
-
-    // 2. Verificar Permisos
     const isAdmin = req.user.role === "admin";
     const isOwner = file.uploadedBy.toString() === req.user._id.toString();
-
     if (!isAdmin && !isOwner) {
       return res
         .status(403)
         .json({ message: "No autorizado para eliminar este recurso." });
     }
 
-    // 3. Eliminar de Google Drive SI es un archivo físico (no un enlace externo)
-    // Usamos el campo driveFileId para saber si hay un archivo en Drive asociado
-    // Asegúrate de que tu modelo File ahora tenga driveFileId para archivos subidos
-    if (file.fileType !== "video_link" && file.fileType !== "generic_link" && file.driveFileId) {
-      try {
-        const googleDriveClient = await getActiveGoogleDriveClient();
-         // Intentamos borrar de Google Drive usando el driveFileId
-        await googleDriveClient.files.delete({
-            fileId: file.driveFileId, // Usa el ID de Google Drive
-            // supportsAllDrives: true, // Descomentar si trabajas con Shared Drives
-        });
-        console.log(`Archivo ${file.driveFileId} eliminado de Google Drive.`);
-
-      } catch (driveError) {
-        console.error("Error al eliminar de Google Drive:", driveError);
-        // Decide si fallar la eliminación total o solo loggear y continuar
-        // Si el archivo no existía en Drive, el API podría dar un error 404.
-        // Puedes chequear el código del error si quieres manejarlo específicamente.
-        // throw new Error('Error al eliminar archivo de Google Drive.'); // Opción para fallar
-      }
+    if (
+      file.fileType !== "video_link" &&
+      file.fileType !== "generic_link" &&
+      file.driveFileId
+    ) {
+      await deleteDriveFileSafely(file.driveFileId);
     }
-    
 
-    // 4. Eliminar de MongoDB
     await File.findByIdAndDelete(fileId);
-    console.log(`Documento de archivo ${fileId} eliminado de la BD.`);
 
-    // 5. Enviar respuesta de éxito sin contenido
-    res.status(204).send(); 
+    await logAudit({
+      req,
+      action: "delete_file",
+      targetType: "file",
+      targetId: fileId,
+      targetName: file.filename,
+      metadata: { folderId: String(file.folder), fileType: file.fileType },
+    });
+
+    res.status(204).send();
   } catch (error) {
     console.error("Error al eliminar archivo/enlace:", error);
     res
@@ -1019,15 +753,273 @@ const deleteFile = async (req, res) => {
   }
 };
 
-async function handleStorageRequest(req, res) {
+async function handleStorageRequest(_req, res) {
   try {
     const storageInfo = await getGoogleDriveStorageQuota();
     res.json({ storageQuota: storageInfo });
   } catch (error) {
-    console.error('Error al procesar la solicitud de almacenamiento:', error);
-    res.status(500).json({ error: 'No se pudo obtener la información del almacenamiento.' });
+    console.error("Error al procesar la solicitud de almacenamiento:", error);
+    res
+      .status(500)
+      .json({ error: "No se pudo obtener la información del almacenamiento." });
   }
 }
 
-// Exportar TODOS los controladores del archivo
-export { uploadFile, getFilesByFolder, addLink, updateFile, deleteFile, handleStorageRequest };
+// --- Pendientes y aprobación ---
+const listPendingFiles = async (_req, res) => {
+  try {
+    const items = await File.find({ status: "pending" })
+      .sort({ createdAt: -1 })
+      .populate("folder", "name")
+      .populate("uploadedBy", "username email")
+      .populate("tags", "name")
+      .populate("assignedGroup", "name")
+      .lean();
+    res.status(200).json({ items });
+  } catch (error) {
+    console.error("Error listando pendientes:", error);
+    res.status(500).json({ message: "Error obteniendo pendientes." });
+  }
+};
+
+const listMyPendingFiles = async (req, res) => {
+  try {
+    const items = await File.find({
+      uploadedBy: req.user._id,
+      status: { $in: ["pending", "rejected"] },
+    })
+      .sort({ createdAt: -1 })
+      .populate("folder", "name")
+      .populate("tags", "name")
+      .populate("assignedGroup", "name")
+      .lean();
+    res.status(200).json({ items });
+  } catch (error) {
+    console.error("Error listando mis pendientes:", error);
+    res.status(500).json({ message: "Error obteniendo tus pendientes." });
+  }
+};
+
+const approveFile = async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ message: "ID inválido." });
+  }
+  try {
+    const file = await File.findById(id);
+    if (!file) return res.status(404).json({ message: "Archivo no encontrado." });
+    if (file.status !== "pending") {
+      return res.status(409).json({
+        message: `El archivo no está en estado pendiente (estado actual: ${file.status}).`,
+      });
+    }
+    file.status = "approved";
+    file.reviewedBy = req.user._id;
+    file.reviewedAt = new Date();
+    file.rejectionReason = "";
+    await file.save();
+
+    await logAudit({
+      req,
+      action: "approve",
+      targetType: "file",
+      targetId: file._id,
+      targetName: file.filename,
+      metadata: { folderId: String(file.folder) },
+    });
+
+    if (file.notifyOnReady && !file.notificationSent) {
+      queueFileNotification(file);
+    }
+
+    const populated = await File.findById(file._id)
+      .populate("uploadedBy", "username email")
+      .populate("folder", "name")
+      .populate("tags", "name")
+      .populate("assignedGroup", "name");
+    res.status(200).json(populated);
+  } catch (error) {
+    console.error("Error aprobando archivo:", error);
+    res.status(500).json({ message: "Error aprobando archivo." });
+  }
+};
+
+const rejectFile = async (req, res) => {
+  const { id } = req.params;
+  const { rejectionReason } = req.body || {};
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ message: "ID inválido." });
+  }
+  try {
+    const file = await File.findById(id);
+    if (!file) return res.status(404).json({ message: "Archivo no encontrado." });
+    if (file.status !== "pending") {
+      return res.status(409).json({
+        message: `El archivo no está en estado pendiente (estado actual: ${file.status}).`,
+      });
+    }
+
+    if (
+      file.fileType !== "video_link" &&
+      file.fileType !== "generic_link" &&
+      file.driveFileId
+    ) {
+      await deleteDriveFileSafely(file.driveFileId);
+    }
+
+    file.status = "rejected";
+    file.rejectionReason = String(rejectionReason || "Rechazado por el administrador.");
+    file.reviewedBy = req.user._id;
+    file.reviewedAt = new Date();
+    await file.save();
+
+    await logAudit({
+      req,
+      action: "reject",
+      targetType: "file",
+      targetId: file._id,
+      targetName: file.filename,
+      metadata: { rejectionReason: file.rejectionReason },
+    });
+
+    res.status(200).json({
+      _id: file._id,
+      status: file.status,
+      rejectionReason: file.rejectionReason,
+    });
+  } catch (error) {
+    console.error("Error rechazando archivo:", error);
+    res.status(500).json({ message: "Error rechazando archivo." });
+  }
+};
+
+// --- Mover archivos ---
+const moveFile = async (req, res) => {
+  const { id } = req.params;
+  const { targetFolderId } = req.body || {};
+
+  if (!mongoose.Types.ObjectId.isValid(id) || !mongoose.Types.ObjectId.isValid(targetFolderId)) {
+    return res.status(400).json({ message: "IDs inválidos." });
+  }
+
+  try {
+    const file = await File.findById(id);
+    if (!file) return res.status(404).json({ message: "Archivo no encontrado." });
+
+    const isAdmin = req.user.role === "admin";
+    const isOwner = file.uploadedBy.toString() === req.user._id.toString();
+    if (!isAdmin && !isOwner) {
+      return res.status(403).json({ message: "No autorizado para mover este archivo." });
+    }
+
+    const targetFolder = await Folder.findById(targetFolderId).lean();
+    if (!targetFolder) {
+      return res.status(404).json({ message: "Carpeta destino no encontrada." });
+    }
+    if (!userCanWriteFolder(req, targetFolder)) {
+      return res
+        .status(403)
+        .json({ message: "No tienes permiso de escritura en la carpeta destino." });
+    }
+
+    const previousFolderId = file.folder.toString();
+    if (previousFolderId === targetFolderId) {
+      return res.status(200).json({ moved: false, fileId: id });
+    }
+
+    file.folder = targetFolderId;
+    await file.save();
+
+    await logAudit({
+      req,
+      action: "move_file",
+      targetType: "file",
+      targetId: file._id,
+      targetName: file.filename,
+      metadata: { fromFolder: previousFolderId, toFolder: targetFolderId },
+    });
+
+    res.status(200).json({ moved: true, fileId: id, targetFolderId });
+  } catch (error) {
+    console.error("Error moviendo archivo:", error);
+    res.status(500).json({ message: "Error moviendo archivo." });
+  }
+};
+
+const moveFilesBatch = async (req, res) => {
+  const { fileIds, targetFolderId } = req.body || {};
+  if (!Array.isArray(fileIds) || fileIds.length === 0) {
+    return res.status(400).json({ message: "fileIds es requerido." });
+  }
+  if (!mongoose.Types.ObjectId.isValid(targetFolderId)) {
+    return res.status(400).json({ message: "targetFolderId inválido." });
+  }
+  const targetFolder = await Folder.findById(targetFolderId).lean();
+  if (!targetFolder) {
+    return res.status(404).json({ message: "Carpeta destino no encontrada." });
+  }
+  if (!userCanWriteFolder(req, targetFolder)) {
+    return res
+      .status(403)
+      .json({ message: "No tienes permiso de escritura en la carpeta destino." });
+  }
+
+  const moved = [];
+  const failed = [];
+  const isAdmin = req.user.role === "admin";
+
+  for (const id of fileIds) {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        failed.push({ id, reason: "id_invalido" });
+        continue;
+      }
+      const file = await File.findById(id);
+      if (!file) {
+        failed.push({ id, reason: "no_encontrado" });
+        continue;
+      }
+      const isOwner = file.uploadedBy.toString() === req.user._id.toString();
+      if (!isAdmin && !isOwner) {
+        failed.push({ id, reason: "no_autorizado" });
+        continue;
+      }
+      const fromFolder = file.folder.toString();
+      if (fromFolder === targetFolderId) {
+        continue;
+      }
+      file.folder = targetFolderId;
+      await file.save();
+      await logAudit({
+        req,
+        action: "move_file",
+        targetType: "file",
+        targetId: file._id,
+        targetName: file.filename,
+        metadata: { fromFolder, toFolder: targetFolderId, batch: true },
+      });
+      moved.push(id);
+    } catch (error) {
+      console.error("Error moviendo archivo batch:", error);
+      failed.push({ id, reason: "error" });
+    }
+  }
+
+  res.status(200).json({ moved, failed, targetFolderId });
+};
+
+export {
+  uploadFile,
+  getFilesByFolder,
+  addLink,
+  updateFile,
+  deleteFile,
+  handleStorageRequest,
+  listPendingFiles,
+  listMyPendingFiles,
+  approveFile,
+  rejectFile,
+  moveFile,
+  moveFilesBatch,
+  detectFileType,
+};

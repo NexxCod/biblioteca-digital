@@ -9,6 +9,7 @@ import folderRoutes from "./routes/folderRoutes.js";
 import tagRoutes from "./routes/tagRoutes.js";
 import groupRoutes from "./routes/groupRoutes.js";
 import googleAuthRoutes from "./routes/googleAuthRoutes.js";
+import adminRoutes from "./routes/adminRoutes.js";
 
 connectDB();
 
@@ -72,6 +73,7 @@ app.use("/api/folders", folderRoutes);
 app.use("/api/tags", tagRoutes);
 app.use("/api/groups", groupRoutes);
 app.use("/api/google", googleAuthRoutes);
+app.use("/api/admin", adminRoutes);
 
 const PORT = process.env.PORT || 5000;
 
