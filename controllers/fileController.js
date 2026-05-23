@@ -98,9 +98,14 @@ const buildFilePermissionFilter = (req) => {
   const userGroupIds = getUserGroupIds(req).filter(Boolean);
 
   // Visibilidad por estado: el uploader ve sus propios pendings/rejected,
-  // los demás solo ven approved.
+  // los demás solo ven archivos sin estado o aprobados. Los archivos
+  // pre-existentes no tienen el campo `status`, por eso usamos $nin para
+  // excluir explícitamente pending/rejected en lugar de exigir "approved".
   const statusFilter = {
-    $or: [{ status: "approved" }, { uploadedBy: user._id }],
+    $or: [
+      { status: { $nin: ["pending", "rejected"] } },
+      { uploadedBy: user._id },
+    ],
   };
 
   let roleFilter;
@@ -181,8 +186,11 @@ const respondWithFileList = async ({
   limit,
 }) => {
   // Admin: por defecto excluye pending/rejected del listado general
-  // (los vé en su panel dedicado). Si quieren incluir, agregamos otro endpoint.
-  const adminBaseFilter = isAdmin ? { status: "approved" } : {};
+  // (los ve en su panel dedicado). Usamos $nin para incluir archivos
+  // preexistentes que no tienen el campo `status` definido.
+  const adminBaseFilter = isAdmin
+    ? { status: { $nin: ["pending", "rejected"] } }
+    : {};
   const finalFilter = isAdmin
     ? { $and: [criteriaFilter, adminBaseFilter] }
     : { $and: [criteriaFilter, permissionFilter] };

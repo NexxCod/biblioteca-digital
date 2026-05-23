@@ -219,11 +219,13 @@ const createDriveUploadSession = async (req, res) => {
         maxSizeMb: settings.maxFileSizeMb,
       });
     }
-    const { decision } = classifyUploadByExtension(filename, settings);
+    const { decision, extension } = classifyUploadByExtension(filename, settings);
     if (decision === "blocked") {
       return res.status(415).json({
-        message: "Extensión bloqueada por política de seguridad.",
+        message: `La extensión .${extension} está bloqueada por política de seguridad. Cambia las reglas en Admin → Configuración o sube un archivo distinto.`,
         code: "EXTENSION_BLOCKED",
+        extension,
+        blockedExtensions: settings.blockedExtensions,
       });
     }
     const initialStatus = req.user.role === "admin" ? "approved" : decision;
@@ -243,6 +245,11 @@ const createDriveUploadSession = async (req, res) => {
       description: description || "",
     };
 
+    // Pasamos el Origin del cliente para que Google devuelva una URL de
+    // subida resumable con CORS habilitado para ese dominio. Sin esto, el
+    // PUT directo desde el navegador es rechazado por CORS.
+    const clientOrigin = req.headers.origin || req.headers.referer || "";
+
     const response = await fetch(
       "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,webContentLink,webViewLink,size,mimeType,description",
       {
@@ -252,6 +259,7 @@ const createDriveUploadSession = async (req, res) => {
           "Content-Type": "application/json; charset=UTF-8",
           "X-Upload-Content-Type": mimeType,
           "X-Upload-Content-Length": String(size),
+          ...(clientOrigin ? { Origin: clientOrigin } : {}),
         },
         body: JSON.stringify(driveMetadata),
       }
