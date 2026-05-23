@@ -76,6 +76,18 @@ const fileSchema = new mongoose.Schema({
         type: Boolean,
         default: false,
     },
+    viewCount: {
+        type: Number,
+        default: 0,
+    },
+    downloadCount: {
+        type: Number,
+        default: 0,
+    },
+    lastAccessedAt: {
+        type: Date,
+        default: null,
+    },
 }, {
     timestamps: true
 });
