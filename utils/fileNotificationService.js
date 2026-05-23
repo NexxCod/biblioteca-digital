@@ -83,13 +83,10 @@ const resolveNotificationRecipients = async (file) => {
     const userGroups = (u.groups || []).map((g) => String(g));
 
     if (u.role === "docente") {
-      // El docente puede ver si: el archivo tiene grupo y él está en él,
-      // o si alguna carpeta ancestro está restringida a un grupo suyo,
-      // o si todo es público.
+      // Coincide con buildFilePermissionFilter en fileController:
+      // el docente ve archivos suyos (excluido como uploader) o asignados
+      // a sus grupos. NO ve archivos públicos.
       if (fileAssignedGroupId && userGroups.includes(fileAssignedGroupId)) {
-        return true;
-      }
-      if (groupChainIsPublic && !fileAssignedGroupId) {
         return true;
       }
       return ancestorGroups.some((g) => userGroups.includes(g));
