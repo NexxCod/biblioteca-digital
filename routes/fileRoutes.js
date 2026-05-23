@@ -4,7 +4,7 @@ import multer from "multer";
 import os from "os";
 import path from "path";
 import fs from "fs";
-import { admin, protect } from "../middleware/authMiddleware.js"; // Middleware de autenticación
+import { admin, protect } from "../middleware/authMiddleware.js";
 import {
   uploadFile,
   getFilesByFolder,
@@ -12,9 +12,15 @@ import {
   updateFile,
   deleteFile,
   handleStorageRequest,
-} from "../controllers/fileController.js"; // Controlador (lo crearemos a continuación)
+  listPendingFiles,
+  listMyPendingFiles,
+  approveFile,
+  rejectFile,
+  moveFile,
+  moveFilesBatch,
+} from "../controllers/fileController.js";
+import { getAppSettings } from "../utils/appSettingsService.js";
 
-// --- Configuración de Multer ---
 const uploadTempDir = path.join(os.tmpdir(), "biblioteca-digital-uploads");
 fs.mkdirSync(uploadTempDir, { recursive: true });
 
@@ -29,52 +35,78 @@ const storage = multer.diskStorage({
   },
 });
 
-// Filtro opcional para tipos de archivo (ejemplo: permitir PDF, Word, JPG, PNG)
-const fileFilter = (req, file, cb) => {
-  const allowedTypes = /pdf|doc|docx|xls|xlsx|ppt|pptx|jpe?g|png|gif|mp4|mp3|aac|wav|flac|aiff|alac|ogg/i;
-  const extension = file.originalname.split('.').pop().toLowerCase();
-  const validExtension = allowedTypes.test(extension);
-
-  if (validExtension) {
-    return cb(null, true);
+// Filtro dinámico: bloquea solo extensiones explícitamente bloqueadas.
+// Aprobado/pending lo decide el controller usando AppSettings.
+const fileFilter = async (_req, file, cb) => {
+  try {
+    const settings = await getAppSettings();
+    const blocked = (settings.blockedExtensions || []).map((e) =>
+      String(e).toLowerCase()
+    );
+    const ext = (file.originalname || "")
+      .split(".")
+      .pop()
+      .toLowerCase();
+    if (blocked.includes(ext)) {
+      const err = new Error(
+        `Tipo de archivo no permitido por política de seguridad (.${ext}).`
+      );
+      err.code = "EXTENSION_BLOCKED";
+      return cb(err, false);
+    }
+    cb(null, true);
+  } catch (error) {
+    console.error("Error en fileFilter:", error);
+    cb(null, true);
   }
-  cb(
-    new Error(
-      "Error: Tipo de archivo no soportado. Permitidos: PDF, MP4, Word, Excel, PowerPoint, JPG, PNG, GIF."
-    ),
-    false
-  );
 };
 
-// Inicializamos multer con el almacenamiento y el filtro
-const upload = multer({
-  storage: storage,
-  limits: {
-    fileSize:
-      (Number(process.env.UPLOAD_MAX_FILE_SIZE_MB || 50) || 50) * 1024 * 1024,
-  },
-  fileFilter: fileFilter,
-});
+const buildMulterInstance = async () => {
+  const settings = await getAppSettings();
+  const maxSizeBytes = (settings.maxFileSizeMb || 1024) * 1024 * 1024;
+  return {
+    upload: multer({
+      storage,
+      limits: { fileSize: maxSizeBytes },
+      fileFilter,
+    }),
+    maxSizeMb: settings.maxFileSizeMb || 1024,
+  };
+};
 
-const uploadSingleFile = (req, res, next) => {
-  upload.single("file")(req, res, (error) => {
-    if (!error) {
-      return next();
-    }
+const uploadSingleFile = async (req, res, next) => {
+  let multerInstance;
+  try {
+    multerInstance = await buildMulterInstance();
+  } catch (error) {
+    console.error("Error inicializando multer:", error);
+    return res
+      .status(500)
+      .json({ message: "Error inicializando la subida." });
+  }
+
+  multerInstance.upload.single("file")(req, res, (error) => {
+    if (!error) return next();
 
     if (error instanceof multer.MulterError) {
       if (error.code === "LIMIT_FILE_SIZE") {
-        const maxSizeMb = Number(process.env.UPLOAD_MAX_FILE_SIZE_MB || 50) || 50;
         return res.status(413).json({
-          message: `El archivo supera el límite permitido de ${maxSizeMb} MB.`,
+          message: `El archivo supera el límite permitido de ${multerInstance.maxSizeMb} MB.`,
           code: "FILE_TOO_LARGE",
-          maxSizeMb,
+          maxSizeMb: multerInstance.maxSizeMb,
         });
       }
 
       return res.status(400).json({
         message: "Error al procesar la subida del archivo.",
         code: error.code || "UPLOAD_ERROR",
+      });
+    }
+
+    if (error.code === "EXTENSION_BLOCKED") {
+      return res.status(415).json({
+        message: error.message,
+        code: "EXTENSION_BLOCKED",
       });
     }
 
@@ -85,34 +117,23 @@ const uploadSingleFile = (req, res, next) => {
   });
 };
 
-// --- Definición de Rutas ---
 const router = express.Router();
 
-// Ruta para subir un archivo
-// POST /api/files/upload
-// 1. 'protect': Asegura que el usuario esté logueado (tendremos req.user)
-// 2. 'upload.single('file')': Middleware de Multer.
-//    - Espera un campo llamado 'file' en el form-data.
-//    - Procesa el archivo y lo añade a req.file.
-//    - Procesa otros campos de texto y los añade a req.body.
-// 3. 'uploadFile': Nuestro controlador que maneja la lógica final.
+// Pendientes: deben definirse ANTES de "/:id" para evitar colisiones
+router.get("/pending", protect, admin, listPendingFiles);
+router.get("/my-pending", protect, listMyPendingFiles);
+
 router.post("/upload", protect, uploadSingleFile, uploadFile);
-
-// Listar archivos por carpeta
-// GET /api/files?folderId=...
 router.get("/", protect, getFilesByFolder);
-
-// Añadir un enlace
-// POST /api/files/add-link
 router.post("/add-link", protect, addLink);
 
-// Actualizar un archivo/enlace existente
-// PUT /api/files/:id
-router.put('/:id', protect, updateFile);
+router.patch("/:id/approve", protect, admin, approveFile);
+router.patch("/:id/reject", protect, admin, rejectFile);
+router.patch("/:id/move", protect, moveFile);
+router.post("/move-batch", protect, moveFilesBatch);
 
-// Eliminar un archivo/enlace existente
-// DELETE /api/files/:id
-router.delete('/:id', protect, deleteFile);
+router.put("/:id", protect, updateFile);
+router.delete("/:id", protect, deleteFile);
 
 router.get("/drive/storage", protect, admin, handleStorageRequest);
 

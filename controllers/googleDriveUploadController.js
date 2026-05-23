@@ -11,6 +11,12 @@ import Folder from "../models/Folder.js";
 import Tag from "../models/Tag.js";
 import Group from "../models/Group.js";
 import { userCanWriteFolder } from "../utils/folderPermissions.js";
+import {
+  classifyUploadByExtension,
+  getAppSettings,
+} from "../utils/appSettingsService.js";
+import { logAudit } from "../utils/auditLog.js";
+import { queueFileNotification } from "../utils/fileNotificationService.js";
 
 const UPLOAD_TOKEN_TTL_SECONDS = 60 * 60; // 1h
 const UPLOAD_TOKEN_PURPOSE = "drive-upload";
@@ -48,6 +54,9 @@ const detectFileType = (filename = "") => {
     ["mp3", "aac", "wav", "flac", "aiff", "alac", "ogg"].includes(extension)
   ) {
     return "audio";
+  }
+  if (["zip", "rar", "7z", "tar", "gz", "tgz"].includes(extension)) {
+    return "archive";
   }
 
   return "other";
@@ -115,13 +124,21 @@ const resolveTagIds = async (tags, userId) => {
   );
 };
 
-const signUploadToken = ({ userId, folderId, assignedGroupId }) =>
+const signUploadToken = ({
+  userId,
+  folderId,
+  assignedGroupId,
+  initialStatus,
+  notifyOnReady,
+}) =>
   jwt.sign(
     {
       purpose: UPLOAD_TOKEN_PURPOSE,
       userId: String(userId),
       folderId: String(folderId),
       assignedGroupId: assignedGroupId ? String(assignedGroupId) : null,
+      initialStatus: initialStatus || "approved",
+      notifyOnReady: Boolean(notifyOnReady),
     },
     process.env.JWT_SECRET,
     { expiresIn: UPLOAD_TOKEN_TTL_SECONDS }
@@ -165,8 +182,15 @@ const verifyUploadToken = (token, userId) => {
 };
 
 const createDriveUploadSession = async (req, res) => {
-  const { filename, mimeType, size, description, folderId, assignedGroupId } =
-    req.body;
+  const {
+    filename,
+    mimeType,
+    size,
+    description,
+    folderId,
+    assignedGroupId,
+    notifyOnReady,
+  } = req.body;
 
   try {
     if (!filename || !mimeType || !size) {
@@ -185,6 +209,27 @@ const createDriveUploadSession = async (req, res) => {
 
     const validatedGroupId = await resolveAssignedGroup(assignedGroupId);
 
+    // Validación contra AppSettings: tamaño + extensión
+    const settings = await getAppSettings();
+    const maxBytes = (settings.maxFileSizeMb || 1024) * 1024 * 1024;
+    if (Number(size) > maxBytes) {
+      return res.status(413).json({
+        message: `El archivo supera el límite permitido de ${settings.maxFileSizeMb} MB.`,
+        code: "FILE_TOO_LARGE",
+        maxSizeMb: settings.maxFileSizeMb,
+      });
+    }
+    const { decision, extension } = classifyUploadByExtension(filename, settings);
+    if (decision === "blocked") {
+      return res.status(415).json({
+        message: `La extensión .${extension} está bloqueada por política de seguridad. Cambia las reglas en Admin → Configuración o sube un archivo distinto.`,
+        code: "EXTENSION_BLOCKED",
+        extension,
+        blockedExtensions: settings.blockedExtensions,
+      });
+    }
+    const initialStatus = req.user.role === "admin" ? "approved" : decision;
+
     const accessToken = await getGoogleDriveAccessToken();
 
     if (!accessToken) {
@@ -200,6 +245,11 @@ const createDriveUploadSession = async (req, res) => {
       description: description || "",
     };
 
+    // Pasamos el Origin del cliente para que Google devuelva una URL de
+    // subida resumable con CORS habilitado para ese dominio. Sin esto, el
+    // PUT directo desde el navegador es rechazado por CORS.
+    const clientOrigin = req.headers.origin || req.headers.referer || "";
+
     const response = await fetch(
       "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,webContentLink,webViewLink,size,mimeType,description",
       {
@@ -209,6 +259,7 @@ const createDriveUploadSession = async (req, res) => {
           "Content-Type": "application/json; charset=UTF-8",
           "X-Upload-Content-Type": mimeType,
           "X-Upload-Content-Length": String(size),
+          ...(clientOrigin ? { Origin: clientOrigin } : {}),
         },
         body: JSON.stringify(driveMetadata),
       }
@@ -235,6 +286,8 @@ const createDriveUploadSession = async (req, res) => {
       userId: req.user._id,
       folderId,
       assignedGroupId: validatedGroupId,
+      initialStatus,
+      notifyOnReady: Boolean(notifyOnReady),
     });
 
     res.status(200).json({
@@ -242,6 +295,7 @@ const createDriveUploadSession = async (req, res) => {
       driveMetadata,
       uploadToken,
       uploadTokenExpiresInSeconds: UPLOAD_TOKEN_TTL_SECONDS,
+      initialStatus,
     });
   } catch (error) {
     console.error("Error iniciando sesión de subida a Drive:", error);
@@ -257,10 +311,11 @@ const finalizeDriveUpload = async (req, res) => {
   try {
     const tokenPayload = verifyUploadToken(uploadToken, req.user._id);
 
-    // El folder y assignedGroup vienen del token firmado, NO del body, para
-    // que el cliente no pueda registrar el archivo en otra carpeta o grupo.
+    // El folder, grupo y estado vienen del token firmado.
     const folderId = tokenPayload.folderId;
     const validatedGroupId = tokenPayload.assignedGroupId || null;
+    const initialStatus = tokenPayload.initialStatus || "approved";
+    const notifyOnReady = Boolean(tokenPayload.notifyOnReady);
 
     if (!driveFile?.id || typeof driveFile.id !== "string") {
       return res.status(400).json({
@@ -339,7 +394,28 @@ const finalizeDriveUpload = async (req, res) => {
       tags: tagIds,
       uploadedBy: req.user._id,
       assignedGroup: validatedGroupId,
+      status: initialStatus,
+      notifyOnReady,
     });
+
+    await logAudit({
+      req,
+      action: "upload",
+      targetType: "file",
+      targetId: newFile._id,
+      targetName: newFile.filename,
+      metadata: {
+        folderId,
+        size: newFile.size,
+        status: newFile.status,
+        fileType: newFile.fileType,
+        directUpload: true,
+      },
+    });
+
+    if (newFile.status === "approved" && newFile.notifyOnReady) {
+      queueFileNotification(newFile);
+    }
 
     const populatedFile = await File.findById(newFile._id)
       .populate("uploadedBy", "username email")

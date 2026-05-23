@@ -4,6 +4,7 @@ import Group from '../models/Group.js'; // <--- Importar Group para validación
 import File from '../models/File.js';
 import mongoose from 'mongoose';
 import User from '../models/User.js';
+import { logAudit } from '../utils/auditLog.js';
 
 const getUserGroupIds = (req) =>
     req.userGroupIds ||
@@ -65,6 +66,15 @@ const createFolder = async (req, res) => {
             parentFolder: parentFolder || null, // Guarda null si no se especifica padre
             createdBy: req.user._id ,// Asigna el ID del usuario logueado (viene de 'protect')
             assignedGroup: validatedGroupId // Asigna el grupo validado (o null si no se asignó)
+        });
+
+        await logAudit({
+            req,
+            action: 'create_folder',
+            targetType: 'folder',
+            targetId: folder._id,
+            targetName: folder.name,
+            metadata: { parentFolder: parentFolder || null, assignedGroup: validatedGroupId },
         });
 
         // 5. Enviar respuesta exitosa
@@ -212,6 +222,15 @@ const updateFolder = async (req, res) => {
         // 4. Guardar los cambios
         const updatedFolder = await folder.save();
 
+        await logAudit({
+            req,
+            action: 'update_folder',
+            targetType: 'folder',
+            targetId: updatedFolder._id,
+            targetName: updatedFolder.name,
+            metadata: { fields: Object.keys(req.body || {}) },
+        });
+
         // 5. Devolver la carpeta actualizada y poblada
         const populatedFolder = await Folder.findById(updatedFolder._id)
                                            .populate('createdBy', 'username')
@@ -266,6 +285,15 @@ const deleteFolder = async (req, res) => {
 
         // 4. Si está vacía y tiene permiso, eliminar de MongoDB
         await Folder.findByIdAndDelete(folderId);
+
+        await logAudit({
+            req,
+            action: 'delete_folder',
+            targetType: 'folder',
+            targetId: folderId,
+            targetName: folder.name,
+            metadata: { parentFolder: folder.parentFolder ? String(folder.parentFolder) : null },
+        });
 
         // 5. Enviar respuesta de éxito sin contenido
         res.status(204).send();
@@ -333,5 +361,140 @@ const getFolderDetails = async (req, res) => {
 };
 
 
+// --- Mover carpeta ---
+const moveFolder = async (req, res) => {
+    const { id: folderId } = req.params;
+    const { targetParentFolderId } = req.body || {};
+
+    if (!mongoose.Types.ObjectId.isValid(folderId)) {
+        return res.status(400).json({ message: 'ID de carpeta inválido.' });
+    }
+    const normalizedTarget =
+        targetParentFolderId === null || targetParentFolderId === undefined || targetParentFolderId === ''
+            ? null
+            : targetParentFolderId;
+    if (normalizedTarget !== null && !mongoose.Types.ObjectId.isValid(normalizedTarget)) {
+        return res.status(400).json({ message: 'targetParentFolderId inválido.' });
+    }
+
+    try {
+        const folder = await Folder.findById(folderId);
+        if (!folder) {
+            return res.status(404).json({ message: 'Carpeta no encontrada.' });
+        }
+
+        const isAdmin = req.user.role === 'admin';
+        const isOwner = folder.createdBy.toString() === req.user._id.toString();
+        if (!isAdmin && !isOwner) {
+            return res.status(403).json({ message: 'No autorizado para mover esta carpeta.' });
+        }
+
+        if (normalizedTarget && String(normalizedTarget) === String(folderId)) {
+            return res.status(400).json({ message: 'No se puede mover una carpeta dentro de sí misma.' });
+        }
+
+        // Detectar ciclos: el destino no puede ser descendiente de la carpeta
+        if (normalizedTarget) {
+            let cursor = normalizedTarget;
+            const visited = new Set();
+            while (cursor) {
+                const id = String(cursor);
+                if (visited.has(id)) break;
+                visited.add(id);
+                if (id === String(folderId)) {
+                    return res.status(400).json({
+                        message: 'No se puede mover la carpeta a una de sus subcarpetas.',
+                    });
+                }
+                const parent = await Folder.findById(cursor).select('parentFolder').lean();
+                if (!parent) break;
+                cursor = parent.parentFolder ? String(parent.parentFolder) : null;
+            }
+        }
+
+        const previousParent = folder.parentFolder ? String(folder.parentFolder) : null;
+        if (previousParent === (normalizedTarget ? String(normalizedTarget) : null)) {
+            return res.status(200).json({ moved: false, folderId });
+        }
+
+        // Verificar duplicados por nombre en el destino
+        const duplicate = await Folder.findOne({
+            name: folder.name,
+            parentFolder: normalizedTarget,
+            _id: { $ne: folderId },
+        });
+        if (duplicate) {
+            return res.status(400).json({
+                message: `Ya existe una carpeta llamada "${folder.name}" en la ubicación destino.`,
+            });
+        }
+
+        folder.parentFolder = normalizedTarget;
+        await folder.save();
+
+        await logAudit({
+            req,
+            action: 'move_folder',
+            targetType: 'folder',
+            targetId: folder._id,
+            targetName: folder.name,
+            metadata: { fromParent: previousParent, toParent: normalizedTarget },
+        });
+
+        res.status(200).json({ moved: true, folderId, targetParentFolderId: normalizedTarget });
+    } catch (error) {
+        console.error('Error moviendo carpeta:', error);
+        if (error.code === 11000) {
+            return res.status(400).json({ message: 'Ya existe una carpeta con ese nombre en la ubicación destino.' });
+        }
+        res.status(500).json({ message: 'Error interno del servidor al mover la carpeta.' });
+    }
+};
+
+// --- Listar todas las carpetas visibles para el árbol de "Mover" ---
+const listAllVisibleFolders = async (req, res) => {
+    const user = req.user;
+    if (!user) return res.status(401).json({ message: 'Usuario no autenticado.' });
+    try {
+        let filter = {};
+        if (user.role !== 'admin') {
+            const userGroupIds = getUserGroupIds(req);
+            if (user.role === 'residente') {
+                filter = {
+                    $or: [
+                        { assignedGroup: null },
+                        { assignedGroup: { $in: userGroupIds } },
+                    ],
+                };
+            } else if (user.role === 'docente') {
+                filter = {
+                    $or: [
+                        { createdBy: user._id },
+                        { assignedGroup: { $in: userGroupIds } },
+                    ],
+                };
+            } else {
+                return res.status(403).json({ message: 'Rol no autorizado.' });
+            }
+        }
+        const folders = await Folder.find(filter)
+            .select('name parentFolder assignedGroup createdBy')
+            .sort({ name: 1 })
+            .lean();
+        res.status(200).json(folders);
+    } catch (error) {
+        console.error('Error listando árbol de carpetas:', error);
+        res.status(500).json({ message: 'Error obteniendo el árbol.' });
+    }
+};
+
 // Exportar TODOS los controladores de carpetas
-export { createFolder, listFolders, updateFolder, deleteFolder, getFolderDetails };
+export {
+    createFolder,
+    listFolders,
+    updateFolder,
+    deleteFolder,
+    getFolderDetails,
+    moveFolder,
+    listAllVisibleFolders,
+};
