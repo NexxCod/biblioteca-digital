@@ -15,6 +15,7 @@ import subscriptionRoutes from "./routes/subscriptionRoutes.js";
 import commentRoutes from "./routes/commentRoutes.js";
 import announcementRoutes from "./routes/announcementRoutes.js";
 import favoritesRoutes from "./routes/favoritesRoutes.js";
+import searchRoutes from "./routes/searchRoutes.js";
 import { startCronWorker } from "./utils/cronWorker.js";
 
 connectDB();
@@ -85,6 +86,7 @@ app.use("/api/subscriptions", subscriptionRoutes);
 app.use("/api/comments", commentRoutes);
 app.use("/api/announcements", announcementRoutes);
 app.use("/api/favorites", favoritesRoutes);
+app.use("/api/search", searchRoutes);
 
 const PORT = process.env.PORT || 5000;
 
