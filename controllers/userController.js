@@ -642,18 +642,81 @@ const resendVerificationEmail = async (req, res) => {
     }
 };
 
+// --- BULK operations en usuarios (admin) ---
+const bulkUpdateUsers = async (req, res) => {
+  const { userIds, action, value } = req.body || {};
+  const mongoose = (await import("mongoose")).default;
+  const User = (await import("../models/User.js")).default;
+
+  if (!Array.isArray(userIds) || !userIds.length) {
+    return res.status(400).json({ message: "userIds es requerido." });
+  }
+  const validIds = userIds.filter((id) => mongoose.Types.ObjectId.isValid(id));
+  if (!validIds.length) {
+    return res.status(400).json({ message: "No hay IDs válidos." });
+  }
+
+  try {
+    if (action === "set_role") {
+      const allowedRoles = ["admin", "docente", "residente", "usuario"];
+      if (!allowedRoles.includes(value)) {
+        return res.status(400).json({ message: "Rol inválido." });
+      }
+      const result = await User.updateMany(
+        { _id: { $in: validIds } },
+        { $set: { role: value } }
+      );
+      return res
+        .status(200)
+        .json({ matched: result.matchedCount, modified: result.modifiedCount });
+    }
+
+    if (action === "add_group") {
+      if (!mongoose.Types.ObjectId.isValid(value)) {
+        return res.status(400).json({ message: "Group ID inválido." });
+      }
+      const result = await User.updateMany(
+        { _id: { $in: validIds } },
+        { $addToSet: { groups: value } }
+      );
+      return res
+        .status(200)
+        .json({ matched: result.matchedCount, modified: result.modifiedCount });
+    }
+
+    if (action === "remove_group") {
+      if (!mongoose.Types.ObjectId.isValid(value)) {
+        return res.status(400).json({ message: "Group ID inválido." });
+      }
+      const result = await User.updateMany(
+        { _id: { $in: validIds } },
+        { $pull: { groups: value } }
+      );
+      return res
+        .status(200)
+        .json({ matched: result.matchedCount, modified: result.modifiedCount });
+    }
+
+    return res.status(400).json({ message: "Acción no soportada." });
+  } catch (error) {
+    console.error("Error en bulk update users:", error);
+    res.status(500).json({ message: "Error procesando operación bulk." });
+  }
+};
+
 // Exportar TODOS los controladores del archivo
 export {
   registerUser,
   loginUser,
   getUserProfile,
-  getUsers, 
-  getUserById, 
-  updateUser, 
-  deleteUser, 
-  verifyEmail,           // NUEVO
-  forgotPassword,        // NUEVO
-  resetPassword,         // NUEVO
-  changePassword,        // NUEVO
-  resendVerificationEmail // NUEVO
+  getUsers,
+  getUserById,
+  updateUser,
+  deleteUser,
+  verifyEmail,
+  forgotPassword,
+  resetPassword,
+  changePassword,
+  resendVerificationEmail,
+  bulkUpdateUsers,
 };

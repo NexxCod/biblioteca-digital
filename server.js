@@ -10,6 +10,12 @@ import tagRoutes from "./routes/tagRoutes.js";
 import groupRoutes from "./routes/groupRoutes.js";
 import googleAuthRoutes from "./routes/googleAuthRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
+import notificationRoutes from "./routes/notificationRoutes.js";
+import subscriptionRoutes from "./routes/subscriptionRoutes.js";
+import commentRoutes from "./routes/commentRoutes.js";
+import announcementRoutes from "./routes/announcementRoutes.js";
+import favoritesRoutes from "./routes/favoritesRoutes.js";
+import { startCronWorker } from "./utils/cronWorker.js";
 
 connectDB();
 
@@ -74,6 +80,11 @@ app.use("/api/tags", tagRoutes);
 app.use("/api/groups", groupRoutes);
 app.use("/api/google", googleAuthRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/notifications", notificationRoutes);
+app.use("/api/subscriptions", subscriptionRoutes);
+app.use("/api/comments", commentRoutes);
+app.use("/api/announcements", announcementRoutes);
+app.use("/api/favorites", favoritesRoutes);
 
 const PORT = process.env.PORT || 5000;
 
@@ -86,4 +97,8 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(
     `CORS allowed origins: ${allowedOrigins.length ? allowedOrigins.join(", ") : "none"}`
   );
+
+  if (process.env.DISABLE_CRON !== "true") {
+    startCronWorker();
+  }
 });

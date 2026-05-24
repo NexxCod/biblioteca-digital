@@ -18,9 +18,15 @@ import {
   rejectFile,
   moveFile,
   moveFilesBatch,
+  checkFilenameInFolder,
 } from "../controllers/fileController.js";
 import { getAppSettings } from "../utils/appSettingsService.js";
 import { trackFileAccess } from "../controllers/fileAccessController.js";
+import {
+  listFileVersions,
+  replaceFileWithNewVersion,
+} from "../controllers/fileVersionController.js";
+import { listRecentForMe } from "../controllers/recentController.js";
 
 const uploadTempDir = path.join(os.tmpdir(), "biblioteca-digital-uploads");
 fs.mkdirSync(uploadTempDir, { recursive: true });
@@ -123,12 +129,17 @@ const router = express.Router();
 // Pendientes: deben definirse ANTES de "/:id" para evitar colisiones
 router.get("/pending", protect, admin, listPendingFiles);
 router.get("/my-pending", protect, listMyPendingFiles);
+router.get("/recent", protect, listRecentForMe);
+router.get("/check-name", protect, checkFilenameInFolder);
 
 router.post("/upload", protect, uploadSingleFile, uploadFile);
 router.get("/", protect, getFilesByFolder);
 router.post("/add-link", protect, addLink);
 
 router.post("/:id/access", protect, trackFileAccess);
+
+router.get("/:id/versions", protect, listFileVersions);
+router.post("/:id/versions", protect, uploadSingleFile, replaceFileWithNewVersion);
 
 router.patch("/:id/approve", protect, admin, approveFile);
 router.patch("/:id/reject", protect, admin, rejectFile);

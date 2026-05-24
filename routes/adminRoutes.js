@@ -17,6 +17,7 @@ import {
   getCommunication,
   updateMySignature,
   getMySignature,
+  cancelScheduledCommunication,
 } from "../controllers/communicationController.js";
 
 const router = express.Router();
@@ -35,6 +36,7 @@ router.post("/communications/preview", protect, admin, previewRecipients);
 router.post("/communications", protect, admin, sendCommunication);
 router.get("/communications", protect, admin, listCommunications);
 router.get("/communications/:id", protect, admin, getCommunication);
+router.patch("/communications/:id/cancel", protect, admin, cancelScheduledCommunication);
 
 // Firma del usuario (cualquier admin puede setear la propia)
 router.get("/me/signature", protect, admin, getMySignature);

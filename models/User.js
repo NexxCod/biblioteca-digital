@@ -64,6 +64,22 @@ const userSchema = new mongoose.Schema(
       default: "",
       maxlength: 4000,
     },
+    favoriteFiles: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "File",
+      },
+    ],
+    dismissedAnnouncements: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Announcement",
+      },
+    ],
+    notificationPreferences: {
+      weeklyDigest: { type: Boolean, default: true },
+      inApp: { type: Boolean, default: true },
+    },
   },
   {
     timestamps: true, // Añade createdAt y updatedAt
