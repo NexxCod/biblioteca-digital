@@ -210,7 +210,7 @@ const respondWithFileList = async ({
   const query = File.find(finalFilter)
     .sort(sortOptions)
     .select(
-      "filename description fileType driveFileId secureUrl size folder tags uploadedBy assignedGroup status rejectionReason createdAt updatedAt"
+      "filename description fileType driveFileId secureUrl size folder tags uploadedBy assignedGroup status rejectionReason viewCount downloadCount lastAccessedAt createdAt updatedAt"
     )
     .populate("folder", "name")
     .populate("uploadedBy", "username email")
