@@ -7,6 +7,10 @@ import {
 } from "../controllers/appSettingsController.js";
 import { listAuditLogs } from "../controllers/auditLogController.js";
 import {
+  listAccessLog,
+  getStatsOverview,
+} from "../controllers/fileAccessController.js";
+import {
   previewRecipients,
   sendCommunication,
   listCommunications,
@@ -21,6 +25,10 @@ router.get("/settings", protect, admin, fetchAppSettings);
 router.get("/settings/public", protect, fetchPublicAppSettings);
 router.patch("/settings", protect, admin, saveAppSettings);
 router.get("/audit-logs", protect, admin, listAuditLogs);
+
+// Telemetría y dashboard
+router.get("/stats/overview", protect, admin, getStatsOverview);
+router.get("/files/access-log", protect, admin, listAccessLog);
 
 // Comunicaciones por correo (solo admin)
 router.post("/communications/preview", protect, admin, previewRecipients);

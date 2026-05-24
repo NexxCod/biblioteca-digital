@@ -20,6 +20,7 @@ import {
   moveFilesBatch,
 } from "../controllers/fileController.js";
 import { getAppSettings } from "../utils/appSettingsService.js";
+import { trackFileAccess } from "../controllers/fileAccessController.js";
 
 const uploadTempDir = path.join(os.tmpdir(), "biblioteca-digital-uploads");
 fs.mkdirSync(uploadTempDir, { recursive: true });
@@ -126,6 +127,8 @@ router.get("/my-pending", protect, listMyPendingFiles);
 router.post("/upload", protect, uploadSingleFile, uploadFile);
 router.get("/", protect, getFilesByFolder);
 router.post("/add-link", protect, addLink);
+
+router.post("/:id/access", protect, trackFileAccess);
 
 router.patch("/:id/approve", protect, admin, approveFile);
 router.patch("/:id/reject", protect, admin, rejectFile);
