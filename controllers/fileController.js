@@ -19,6 +19,48 @@ import {
 } from "../utils/appSettingsService.js";
 import { logAudit } from "../utils/auditLog.js";
 import { queueFileNotification } from "../utils/fileNotificationService.js";
+import { createNotification, createManyNotifications } from "../utils/notificationService.js";
+import FolderSubscription from "../models/FolderSubscription.js";
+import { getAncestorFolderIds } from "../utils/folderPath.js";
+
+// Notifica in-app a quienes tienen suscripción a la carpeta o algún ancestro
+// con includeSubfolders=true.
+const notifyFolderSubscribers = async (file) => {
+  try {
+    const folderId = file.folder?._id || file.folder;
+    if (!folderId) return;
+    const ancestorIds = await getAncestorFolderIds(folderId);
+    // Directos a la carpeta
+    const directSubs = await FolderSubscription.find({
+      folder: folderId,
+    }).select("user").lean();
+    // Ancestros con includeSubfolders=true
+    const ancestorParentIds = ancestorIds.filter(
+      (id) => String(id) !== String(folderId)
+    );
+    const ancestorSubs = ancestorParentIds.length
+      ? await FolderSubscription.find({
+          folder: { $in: ancestorParentIds },
+          includeSubfolders: true,
+        }).select("user").lean()
+      : [];
+    const userIds = [...directSubs, ...ancestorSubs]
+      .map((s) => String(s.user))
+      .filter((id) => id !== String(file.uploadedBy));
+    const unique = [...new Set(userIds)];
+    if (!unique.length) return;
+    createManyNotifications(unique, {
+      type: "subscribed_folder_new_file",
+      title: `Nuevo archivo: ${file.filename}`,
+      body: file.description ? file.description.slice(0, 200) : "",
+      link: `/folder/${folderId}?file=${file._id}`,
+      relatedFile: file._id,
+      relatedFolder: folderId,
+    });
+  } catch (error) {
+    console.error("Error notificando suscriptores:", error);
+  }
+};
 
 const sanitizeFilename = (filename) => {
   const fixes = {
@@ -386,8 +428,9 @@ const uploadFile = async (req, res) => {
       },
     });
 
-    if (newFile.status === "approved" && newFile.notifyOnReady) {
-      queueFileNotification(newFile);
+    if (newFile.status === "approved") {
+      if (newFile.notifyOnReady) queueFileNotification(newFile);
+      notifyFolderSubscribers(newFile);
     }
 
     const populatedFile = await File.findById(newFile._id)
@@ -761,6 +804,33 @@ const deleteFile = async (req, res) => {
   }
 };
 
+// GET /api/files/check-name?folderId=...&filename=...
+// Devuelve { exists: bool, file?: { _id, filename, fileType, size } }
+const checkFilenameInFolder = async (req, res) => {
+  const { folderId, filename } = req.query || {};
+  if (!folderId || !mongoose.Types.ObjectId.isValid(folderId)) {
+    return res.status(400).json({ message: "folderId inválido." });
+  }
+  if (!filename) {
+    return res.status(400).json({ message: "filename es requerido." });
+  }
+  try {
+    const file = await File.findOne({
+      folder: folderId,
+      filename: String(filename).trim(),
+      uploadedBy: req.user._id,
+    })
+      .select("_id filename fileType size currentVersion")
+      .lean();
+    res
+      .status(200)
+      .json({ exists: Boolean(file), file: file || null });
+  } catch (error) {
+    console.error("Error verificando nombre:", error);
+    res.status(500).json({ message: "Error." });
+  }
+};
+
 async function handleStorageRequest(_req, res) {
   try {
     const storageInfo = await getGoogleDriveStorageQuota();
@@ -839,6 +909,15 @@ const approveFile = async (req, res) => {
     if (file.notifyOnReady && !file.notificationSent) {
       queueFileNotification(file);
     }
+    notifyFolderSubscribers(file);
+    // Notificación in-app al uploader
+    createNotification({
+      userId: file.uploadedBy,
+      type: "file_approved",
+      title: `Tu archivo "${file.filename}" fue aprobado`,
+      link: `/folder/${file.folder}?file=${file._id}`,
+      relatedFile: file._id,
+    });
 
     const populated = await File.findById(file._id)
       .populate("uploadedBy", "username email")
@@ -888,6 +967,15 @@ const rejectFile = async (req, res) => {
       targetId: file._id,
       targetName: file.filename,
       metadata: { rejectionReason: file.rejectionReason },
+    });
+
+    createNotification({
+      userId: file.uploadedBy,
+      type: "file_rejected",
+      title: `Tu archivo "${file.filename}" fue rechazado`,
+      body: file.rejectionReason,
+      link: `/folder/${file.folder}`,
+      relatedFile: file._id,
     });
 
     res.status(200).json({
@@ -1030,4 +1118,5 @@ export {
   moveFile,
   moveFilesBatch,
   detectFileType,
+  checkFilenameInFolder,
 };

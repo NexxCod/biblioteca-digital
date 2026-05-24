@@ -17,6 +17,9 @@ import {
 } from "../utils/appSettingsService.js";
 import { logAudit } from "../utils/auditLog.js";
 import { queueFileNotification } from "../utils/fileNotificationService.js";
+import { createManyNotifications } from "../utils/notificationService.js";
+import FolderSubscription from "../models/FolderSubscription.js";
+import { getAncestorFolderIds } from "../utils/folderPath.js";
 
 const UPLOAD_TOKEN_TTL_SECONDS = 60 * 60; // 1h
 const UPLOAD_TOKEN_PURPOSE = "drive-upload";
@@ -413,8 +416,42 @@ const finalizeDriveUpload = async (req, res) => {
       },
     });
 
-    if (newFile.status === "approved" && newFile.notifyOnReady) {
-      queueFileNotification(newFile);
+    if (newFile.status === "approved") {
+      if (newFile.notifyOnReady) queueFileNotification(newFile);
+      // Notificar a suscriptores de carpeta
+      try {
+        const ancestorIds = await getAncestorFolderIds(folderId);
+        const direct = await FolderSubscription.find({ folder: folderId })
+          .select("user")
+          .lean();
+        const ancestorParents = ancestorIds.filter(
+          (id) => String(id) !== String(folderId)
+        );
+        const indirect = ancestorParents.length
+          ? await FolderSubscription.find({
+              folder: { $in: ancestorParents },
+              includeSubfolders: true,
+            })
+              .select("user")
+              .lean()
+          : [];
+        const ids = [...direct, ...indirect]
+          .map((s) => String(s.user))
+          .filter((id) => id !== String(req.user._id));
+        const unique = [...new Set(ids)];
+        if (unique.length) {
+          createManyNotifications(unique, {
+            type: "subscribed_folder_new_file",
+            title: `Nuevo archivo: ${newFile.filename}`,
+            body: persistedDescription ? persistedDescription.slice(0, 200) : "",
+            link: `/folder/${folderId}?file=${newFile._id}`,
+            relatedFile: newFile._id,
+            relatedFolder: folderId,
+          });
+        }
+      } catch (subErr) {
+        console.error("Error notificando suscriptores (direct upload):", subErr);
+      }
     }
 
     const populatedFile = await File.findById(newFile._id)

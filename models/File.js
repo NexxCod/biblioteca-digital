@@ -88,6 +88,14 @@ const fileSchema = new mongoose.Schema({
         type: Date,
         default: null,
     },
+    currentVersion: {
+        type: Number,
+        default: 1,
+    },
+    mimeType: {
+        type: String,
+        default: "",
+    },
 }, {
     timestamps: true
 });

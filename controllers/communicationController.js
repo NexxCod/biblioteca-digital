@@ -44,6 +44,7 @@ const sendCommunication = async (req, res) => {
       groupIds,
       userIds,
       sendTestToSelf,
+      scheduledFor,
     } = req.body || {};
 
     if (!subject || !subject.trim()) {
@@ -75,6 +76,30 @@ const sendCommunication = async (req, res) => {
       return res.status(200).json({ message: "Correo de prueba enviado.", testMode: true });
     }
 
+    // Si viene scheduledFor en el futuro, dejar la comunicación en estado scheduled
+    const scheduledDate = scheduledFor ? new Date(scheduledFor) : null;
+    if (scheduledDate && !Number.isNaN(scheduledDate.getTime()) && scheduledDate > new Date()) {
+      const record = await Communication.create({
+        sender: sender._id,
+        senderName: sender.username,
+        senderEmail: sender.email,
+        subject: subject.trim(),
+        bodyHtml: cleanBody,
+        audience,
+        roles: audience === "roles" ? roles || [] : [],
+        groupIds: audience === "groups" ? groupIds || [] : [],
+        userIds: audience === "users" ? userIds || [] : [],
+        recipientCount: 0,
+        scheduledFor: scheduledDate,
+        status: "scheduled",
+      });
+      return res.status(201).json({
+        _id: record._id,
+        status: "scheduled",
+        scheduledFor: scheduledDate,
+      });
+    }
+
     const recipients = await resolveRecipients({
       audience,
       roles,
@@ -103,6 +128,7 @@ const sendCommunication = async (req, res) => {
       errorCount: errors.length,
       errorSample: errors.slice(0, 5),
       sentAt: new Date(),
+      status: errors.length ? "failed" : "sent",
     });
 
     await logAudit({
@@ -216,6 +242,28 @@ const getMySignature = async (req, res) => {
   }
 };
 
+const cancelScheduledCommunication = async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ message: "ID inválido." });
+  }
+  try {
+    const item = await Communication.findById(id);
+    if (!item) return res.status(404).json({ message: "No encontrada." });
+    if (item.status !== "scheduled") {
+      return res.status(409).json({
+        message: "Solo se pueden cancelar comunicaciones programadas.",
+      });
+    }
+    item.status = "cancelled";
+    await item.save();
+    res.status(200).json(item);
+  } catch (error) {
+    console.error("Error cancelando comunicación:", error);
+    res.status(500).json({ message: "Error." });
+  }
+};
+
 export {
   previewRecipients,
   sendCommunication,
@@ -223,4 +271,5 @@ export {
   getCommunication,
   updateMySignature,
   getMySignature,
+  cancelScheduledCommunication,
 };

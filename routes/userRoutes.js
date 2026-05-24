@@ -11,15 +11,16 @@ import {
     registerUser,
     loginUser,
     getUserProfile,
-    getUsers, // Importar nuevo controlador
-    getUserById, // Importar nuevo controlador
-    updateUser, // Importar nuevo controlador
-    deleteUser, // Importar nuevo controlador
-    verifyEmail,           // NUEVO
-    forgotPassword,        // NUEVO
-    resetPassword,         // NUEVO
-    changePassword,        // NUEVO
-    resendVerificationEmail // NUEVO
+    getUsers,
+    getUserById,
+    updateUser,
+    deleteUser,
+    verifyEmail,
+    forgotPassword,
+    resetPassword,
+    changePassword,
+    resendVerificationEmail,
+    bulkUpdateUsers,
 } from '../controllers/userController.js';
 
 const router = express.Router();
@@ -38,6 +39,9 @@ router.post('/forgot-password', passwordResetLimiter, forgotPassword);
 router.post('/reset-password/:token', passwordResetLimiter, resetPassword);
 router.put('/change-password', protect, changePassword);
 router.post('/resend-verification', verifyEmailLimiter, resendVerificationEmail);
+
+// Bulk update (asignar grupo, cambiar rol, etc.) - admin only
+router.post('/bulk-update', protect, admin, bulkUpdateUsers);
 
 // Ruta para listar todos los usuarios
 // GET /api/users/

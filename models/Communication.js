@@ -25,7 +25,14 @@ const communicationSchema = new mongoose.Schema(
     recipientCount: { type: Number, default: 0 },
     errorCount: { type: Number, default: 0 },
     errorSample: [{ type: String }],
-    sentAt: { type: Date, default: Date.now },
+    sentAt: { type: Date, default: null },
+    scheduledFor: { type: Date, default: null, index: true },
+    status: {
+      type: String,
+      enum: ["scheduled", "sent", "failed", "cancelled"],
+      default: "sent",
+      index: true,
+    },
   },
   { timestamps: true }
 );

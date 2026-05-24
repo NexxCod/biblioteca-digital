@@ -9,6 +9,7 @@ import {
     getFolderDetails,
     moveFolder,
     listAllVisibleFolders,
+    getFolderBreadcrumbs,
 } from '../controllers/folderController.js';
 
 const router = express.Router();
@@ -20,6 +21,8 @@ router.get('/', protect, listFolders);
 router.get('/all', protect, listAllVisibleFolders);
 
 router.patch('/:id/move', protect, moveFolder);
+
+router.get('/:id/path', protect, getFolderBreadcrumbs);
 
 router.put('/:id', protect, updateFolder);
 router.delete('/:id', protect, deleteFolder);

@@ -5,6 +5,7 @@ import File from '../models/File.js';
 import mongoose from 'mongoose';
 import User from '../models/User.js';
 import { logAudit } from '../utils/auditLog.js';
+import { getFolderPath } from '../utils/folderPath.js';
 
 const getUserGroupIds = (req) =>
     req.userGroupIds ||
@@ -488,6 +489,21 @@ const listAllVisibleFolders = async (req, res) => {
     }
 };
 
+// Breadcrumbs: GET /api/folders/:id/path
+const getFolderBreadcrumbs = async (req, res) => {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ message: 'ID de carpeta inválido.' });
+    }
+    try {
+        const path = await getFolderPath(id);
+        res.status(200).json(path);
+    } catch (error) {
+        console.error('Error obteniendo breadcrumbs:', error);
+        res.status(500).json({ message: 'Error.' });
+    }
+};
+
 // Exportar TODOS los controladores de carpetas
 export {
     createFolder,
@@ -497,4 +513,5 @@ export {
     getFolderDetails,
     moveFolder,
     listAllVisibleFolders,
+    getFolderBreadcrumbs,
 };
