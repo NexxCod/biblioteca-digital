@@ -92,6 +92,26 @@ export const sendVerificationEmail = async (userEmail, token) => {
   return sendEmail(userEmail, subject, htmlContent);
 };
 
+export const sendLoginLinkEmail = async (userEmail, token) => {
+  const loginLink = `${process.env.FRONTEND_URL}/magic-link/${token}`;
+  const subject = "Tu enlace de acceso a la Biblioteca Digital";
+  const htmlContent = `
+    <p>Hola,</p>
+    <p>Solicitaste acceder a la Biblioteca Digital sin contraseña. Haz clic en el siguiente botón para iniciar sesión:</p>
+    <p style="margin: 24px 0;">
+      <a href="${loginLink}" style="background-color: #3b6f63; color: #ffffff; padding: 12px 24px; border-radius: 8px; text-decoration: none; display: inline-block; font-weight: bold;">
+        Entrar a la biblioteca
+      </a>
+    </p>
+    <p>O copia y pega este enlace en tu navegador:</p>
+    <p><a href="${loginLink}">${loginLink}</a></p>
+    <p>Este enlace expirará en 15 minutos y solo puede usarse una vez.</p>
+    <p>Si no solicitaste este acceso, puedes ignorar este mensaje: tu cuenta sigue segura.</p>
+  `;
+
+  return sendEmail(userEmail, subject, htmlContent);
+};
+
 export const sendPasswordResetEmail = async (userEmail, token) => {
   const resetLink = `${process.env.FRONTEND_URL}/reset-password/${token}`;
   const subject = "Restablecimiento de contraseña";

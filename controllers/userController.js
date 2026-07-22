@@ -8,6 +8,7 @@ import crypto from "crypto"; // Para hashear tokens recibidos
 import {
   sendVerificationEmail,
   sendPasswordResetEmail,
+  sendLoginLinkEmail,
   EmailServiceConfigError,
 } from "../utils/emailService.js";
 
@@ -522,6 +523,98 @@ const forgotPassword = async (req, res) => {
   }
 };
 
+// --- Controlador para Solicitar Enlace de Acceso (Magic Link) ---
+const requestLoginLink = async (req, res) => {
+  if (!requireStringFields(req, res, ["email"])) {
+    return;
+  }
+  const { email } = req.body;
+
+  try {
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
+
+    if (user) {
+      // Igual que en forgotPassword: solo se genera y envía si el usuario
+      // existe, y la respuesta es siempre genérica para no revelar si un
+      // email está registrado.
+      const loginToken = user.generateLoginLinkToken();
+      await user.save({ validateBeforeSave: false });
+
+      try {
+        await sendLoginLinkEmail(user.email, loginToken);
+        console.log(`Enlace de acceso enviado a ${user.email}`);
+      } catch (emailError) {
+        if (isEmailServiceConfigError(emailError)) {
+          console.error("Servicio de correo no configurado para enlace de acceso.");
+        } else {
+          console.error(`Error enviando enlace de acceso a ${user.email}:`, emailError);
+        }
+      }
+    } else {
+      console.log(`Solicitud de enlace de acceso para email no registrado: ${email}`);
+    }
+
+    res.status(200).json({
+      message:
+        "Si tu correo está registrado, recibirás un enlace de acceso en unos segundos. Revisa también tu carpeta de spam.",
+    });
+  } catch (error) {
+    console.error("Error en requestLoginLink:", error);
+    res.status(200).json({
+      message:
+        "Si tu correo está registrado, recibirás un enlace de acceso en unos segundos. Revisa también tu carpeta de spam.",
+    });
+  }
+};
+
+// --- Controlador para Canjear el Enlace de Acceso por una Sesión ---
+const verifyLoginLink = async (req, res) => {
+  if (!requireStringFields(req, res, ["token"])) {
+    return;
+  }
+  const { token } = req.body;
+
+  const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
+
+  try {
+    const user = await User.findOne({
+      loginLinkToken: hashedToken,
+      loginLinkTokenExpires: { $gt: Date.now() },
+    })
+      .select("+loginLinkToken +loginLinkTokenExpires")
+      .populate("groups", "_id name");
+
+    if (!user) {
+      return res.status(400).json({
+        message:
+          "El enlace de acceso es inválido o ya expiró. Solicita uno nuevo desde la página de inicio de sesión.",
+        code: "MAGIC_LINK_INVALID",
+      });
+    }
+
+    // El enlace es de un solo uso
+    user.loginLinkToken = undefined;
+    user.loginLinkTokenExpires = undefined;
+    // Acceder desde el correo demuestra que el email le pertenece
+    user.isEmailVerified = true;
+    await user.save({ validateBeforeSave: false });
+
+    const jwtToken = generateToken(user._id);
+    res.status(200).json({
+      _id: user._id,
+      username: user.username,
+      email: user.email,
+      role: user.role,
+      groups: user.groups,
+      token: jwtToken,
+      isEmailVerified: user.isEmailVerified,
+    });
+  } catch (error) {
+    console.error("Error en verifyLoginLink:", error);
+    res.status(500).json({ message: "Error interno del servidor al validar el enlace de acceso." });
+  }
+};
+
 // --- NUEVO: Controlador para Restablecer Contraseña ---
 const resetPassword = async (req, res) => {
   const { token } = req.params;
@@ -719,4 +812,6 @@ export {
   changePassword,
   resendVerificationEmail,
   bulkUpdateUsers,
+  requestLoginLink,
+  verifyLoginLink,
 };

@@ -6,6 +6,8 @@ import {
     registerLimiter,
     passwordResetLimiter,
     verifyEmailLimiter,
+    magicLinkLimiter,
+    magicLinkVerifyLimiter,
 } from '../middleware/rateLimiters.js';
 import {
     registerUser,
@@ -21,6 +23,8 @@ import {
     changePassword,
     resendVerificationEmail,
     bulkUpdateUsers,
+    requestLoginLink,
+    verifyLoginLink,
 } from '../controllers/userController.js';
 
 const router = express.Router();
@@ -30,6 +34,10 @@ router.post('/register', registerLimiter, registerUser);
 
 // Ruta para iniciar sesión
 router.post('/login', loginLimiter, loginUser);
+
+// Acceso sin contraseña: solicitar enlace por correo y canjearlo por una sesión
+router.post('/magic-link', magicLinkLimiter, requestLoginLink);
+router.post('/magic-link/verify', magicLinkVerifyLimiter, verifyLoginLink);
 
 // NUEVA RUTA para obtener datos del usuario logueado
 router.get('/me', protect, getUserProfile);
