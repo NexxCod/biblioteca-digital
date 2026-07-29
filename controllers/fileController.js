@@ -1119,4 +1119,5 @@ export {
   moveFilesBatch,
   detectFileType,
   checkFilenameInFolder,
+  buildFilePermissionFilter,
 };

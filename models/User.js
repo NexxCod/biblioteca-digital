@@ -59,6 +59,14 @@ const userSchema = new mongoose.Schema(
       type: Date,
       select: false,
     },
+    loginLinkToken: {
+      type: String,
+      select: false,
+    },
+    loginLinkTokenExpires: {
+      type: Date,
+      select: false,
+    },
     signature: {
       type: String,
       default: "",
@@ -115,6 +123,20 @@ userSchema.methods.generateEmailVerificationToken = function () {
   this.emailVerificationTokenExpires = Date.now() + 24 * 60 * 60 * 1000; // 24 horas
 
   return verificationToken; // Devuelve el token original para enviarlo por email
+};
+
+// Generar y hashear token de acceso por enlace (magic link)
+userSchema.methods.generateLoginLinkToken = function () {
+  const loginToken = crypto.randomBytes(32).toString('hex');
+
+  this.loginLinkToken = crypto
+    .createHash('sha256')
+    .update(loginToken)
+    .digest('hex');
+
+  this.loginLinkTokenExpires = Date.now() + 15 * 60 * 1000; // 15 minutos
+
+  return loginToken; // Devuelve el token original para enviarlo por email
 };
 
 // Generar y hashear token de restablecimiento de contraseña

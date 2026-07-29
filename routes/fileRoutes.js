@@ -26,7 +26,7 @@ import {
   listFileVersions,
   replaceFileWithNewVersion,
 } from "../controllers/fileVersionController.js";
-import { listRecentForMe } from "../controllers/recentController.js";
+import { listRecentForMe, listRecentUploads } from "../controllers/recentController.js";
 
 const uploadTempDir = path.join(os.tmpdir(), "biblioteca-digital-uploads");
 fs.mkdirSync(uploadTempDir, { recursive: true });
@@ -130,6 +130,7 @@ const router = express.Router();
 router.get("/pending", protect, admin, listPendingFiles);
 router.get("/my-pending", protect, listMyPendingFiles);
 router.get("/recent", protect, listRecentForMe);
+router.get("/recent-uploads", protect, listRecentUploads);
 router.get("/check-name", protect, checkFilenameInFolder);
 
 router.post("/upload", protect, uploadSingleFile, uploadFile);
