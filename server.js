@@ -16,6 +16,7 @@ import commentRoutes from "./routes/commentRoutes.js";
 import announcementRoutes from "./routes/announcementRoutes.js";
 import favoritesRoutes from "./routes/favoritesRoutes.js";
 import searchRoutes from "./routes/searchRoutes.js";
+import integrationRoutes from "./routes/integrationRoutes.js";
 import { startCronWorker } from "./utils/cronWorker.js";
 
 connectDB();
@@ -87,6 +88,7 @@ app.use("/api/comments", commentRoutes);
 app.use("/api/announcements", announcementRoutes);
 app.use("/api/favorites", favoritesRoutes);
 app.use("/api/search", searchRoutes);
+app.use("/api/integration", integrationRoutes);
 
 const PORT = process.env.PORT || 5000;
 
@@ -99,6 +101,12 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(
     `CORS allowed origins: ${allowedOrigins.length ? allowedOrigins.join(", ") : "none"}`
   );
+
+  if (!process.env.INTEGRATION_API_KEY) {
+    console.warn(
+      "INTEGRATION_API_KEY no configurada: la API de integración (/api/integration) está deshabilitada (responderá 503)."
+    );
+  }
 
   if (process.env.DISABLE_CRON !== "true") {
     startCronWorker();

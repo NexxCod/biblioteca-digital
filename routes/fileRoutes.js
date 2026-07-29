@@ -152,4 +152,8 @@ router.delete("/:id", protect, deleteFile);
 
 router.get("/drive/storage", protect, admin, handleStorageRequest);
 
+// Reutilizado por routes/integrationRoutes.js (mismo tmpdir, límite dinámico
+// de AppSettings y manejo de errores de multer).
+export { uploadSingleFile };
+
 export default router;

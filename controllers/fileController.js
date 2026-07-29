@@ -1118,6 +1118,8 @@ export {
   moveFile,
   moveFilesBatch,
   detectFileType,
+  sanitizeFilename,
+  deleteDriveFileSafely,
   checkFilenameInFolder,
   buildFilePermissionFilter,
 };
