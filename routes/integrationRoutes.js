@@ -16,6 +16,8 @@ const router = express.Router();
 router.use(integrationAuth);
 
 // Liga/crea usuario por email (PA es la referencia de identidad).
+router.get("/config", integrationConfig);
+
 router.post("/users/ensure", ensureUser);
 
 // JWT de acceso único (SSO) para abrir la biblioteca sin segundo login.

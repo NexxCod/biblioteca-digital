@@ -508,3 +508,11 @@ export {
   uploadIntegrationFile,
   deleteIntegrationFile,
 };
+
+// Config pública para la plataforma integrada (R30): el tope de subida REAL.
+// Preinforme Analytics lo consulta para aplicar EL MISMO límite (una fuente).
+export const integrationConfig = async (_req, res) => {
+  const { getAppSettings } = await import("../utils/appSettingsService.js");
+  const settings = await getAppSettings();
+  res.json({ maxFileSizeMb: settings.maxFileSizeMb || 1024 });
+};
