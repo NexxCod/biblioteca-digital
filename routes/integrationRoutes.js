@@ -9,15 +9,18 @@ import {
   ssoToken,
   uploadIntegrationFile,
   deleteIntegrationFile,
+  integrationConfig,
 } from "../controllers/integrationController.js";
 
 const router = express.Router();
 
 router.use(integrationAuth);
 
-// Liga/crea usuario por email (PA es la referencia de identidad).
+// Config pública de la integración (tope de subida vigente): PA la consulta
+// para aplicar EL MISMO límite que la biblioteca, sin duplicar la constante.
 router.get("/config", integrationConfig);
 
+// Liga/crea usuario por email (PA es la referencia de identidad).
 router.post("/users/ensure", ensureUser);
 
 // JWT de acceso único (SSO) para abrir la biblioteca sin segundo login.
