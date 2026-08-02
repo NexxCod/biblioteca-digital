@@ -1,0 +1,35 @@
+# Integración continua mínima.
+#
+# Existe por un caso concreto: un `import` olvidado en
+# routes/integrationRoutes.js hacía que el módulo lanzara ReferenceError al
+# evaluarse y, como server.js lo importa de forma estática, el backend no
+# arrancaba. Llegó a una rama sin que nada lo detectara porque el repo no
+# tenía pruebas ni CI.
+#
+# Las pruebas no necesitan Mongo, Drive ni secretos: comprueban que el grafo
+# de módulos evalúa y que la API de integración expone el contrato acordado
+# con preinforme-analytics. Por eso este workflow no configura servicios.
+name: Pruebas
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # `npm ci` exige que package-lock.json esté al día con package.json;
+      # si algún día se desincroniza, es mejor que falle aquí y no en un
+      # despliegue.
+      - run: npm ci
+
+      - run: npm test
